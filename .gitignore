@@ -1,7 +1,8 @@
 .venv/
 __pycache__/
 *.pyc
-resources/
+resources/*
+!resources/icon.ico
 logs/
 dist/
 build/

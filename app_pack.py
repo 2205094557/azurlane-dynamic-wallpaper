@@ -12,11 +12,14 @@ from urllib.parse import unquote
 
 import webview
 
+from core.applog import setup_logging
+
 ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "frontend" / "dist"
 RESOURCES = ROOT / "resources"
 BACKEND_PORT = 8770
 STATIC_PORT = 5174
+logger = setup_logging()
 
 # 用户级持久化：窗口尺寸/最大化 + WebView2 localStorage（收藏、音量、并发数等设置）
 APP_DATA = Path(os.environ.get("APPDATA", str(Path.home()))) / "azurlane-dynamic-wallpaper"
@@ -102,14 +105,27 @@ def ensure_runtime_dirs() -> None:
 
 
 def main() -> None:
+    logger.info("app start: backend port=%s static port=%s", BACKEND_PORT, STATIC_PORT)
     ensure_runtime_dirs()
     # 后端 API（8766）
     if not port_open(BACKEND_PORT):
         import backend_server
 
-        threading.Thread(target=backend_server.main, args=(BACKEND_PORT,), daemon=True).start()
+        def _run_backend() -> None:
+            try:
+                backend_server.main(BACKEND_PORT)
+            except Exception:  # noqa: BLE001
+                logger.exception("backend thread crashed")
+
+        threading.Thread(target=_run_backend, daemon=True).start()
+    else:
+        logger.info("backend port %s already in use, reusing existing instance", BACKEND_PORT)
     # 静态前端（5174，服务 frontend/dist + resources/）
-    server = ThreadingHTTPServer(("127.0.0.1", STATIC_PORT), Handler)
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", STATIC_PORT), Handler)
+    except OSError:
+        logger.exception("static server bind failed on port %s", STATIC_PORT)
+        raise
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     url = f"http://127.0.0.1:{STATIC_PORT}/"
@@ -167,6 +183,7 @@ def main() -> None:
         persist(lambda p: p.update({**last_size, "maximized": False}))
 
     def on_closing() -> None:
+        logger.info("window closing event")
         if save_timer:
             save_timer.cancel()
         persist(lambda p: p.update(last_size))
@@ -177,7 +194,13 @@ def main() -> None:
     window.events.closing += on_closing
 
     # private_mode=False + 固定 storage_path：localStorage（音量/线程数/收藏等）跨重启保留
-    webview.start(debug=False, private_mode=False, storage_path=str(WEBVIEW_DATA))
+    logger.info("webview.start begin")
+    try:
+        webview.start(debug=False, private_mode=False, storage_path=str(WEBVIEW_DATA))
+    except Exception:  # noqa: BLE001
+        logger.exception("webview.start failed")
+        raise
+    logger.info("webview.start returned, app exiting")
 
 
 if __name__ == "__main__":

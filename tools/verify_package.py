@@ -179,12 +179,16 @@ def main() -> int:
 
     exe = Path(args.dist) / "azurlane-wallpaper.exe"
     print(f"验收对象：{exe}")
-    proc = None
-    try:
-        wait_health(exe, timeout=5)  # 已运行则复用
-    except Exception:  # noqa: BLE001
-        proc = subprocess.Popen([str(exe)], cwd=str(exe.parent))
-        wait_health(exe)
+    # 先清掉任何残留的旧打包版实例（8770/5174 可能被旧进程占用，
+    # 不杀会导致验收复用旧实例而验错对象 → 假 PASS）
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command",
+         "Get-Process -Name azurlane-wallpaper -ErrorAction SilentlyContinue | Stop-Process -Force"],
+        check=False,
+    )
+    time.sleep(2)
+    proc = subprocess.Popen([str(exe)], cwd=str(exe.parent))
+    wait_health(exe)
 
     ok = verify()
     print()

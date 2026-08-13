@@ -68,19 +68,18 @@ start_dev.bat
 ## 打包发布
 
 ```bash
-# 1. 构建前端（packaged 模式，API 指向 127.0.0.1:8770）
-cd frontend
-npm run build -- --mode packaged
-cd ..
+# 一键打包：强制 packaged 前端构建（API 指向 8770）→ 校验 → PyInstaller → 产物自检
+python scripts/build_pack.py
 
-# 2. PyInstaller 打包（onedir）
-.venv\Scripts\pyinstaller azurlane.spec --noconfirm --clean
-
-# 3. 发布前全链路验收（真实下载三类皮肤并校验提取/导出产物）
+# 发布前全链路验收（真实下载三类皮肤并校验提取/导出产物）
 python tools/verify_package.py --clean
 ```
 
 产物位于 `dist/azurlane-wallpaper/`，入口为 `azurlane-wallpaper.exe`（内置后端 8770 + 静态前端 5174）。
+
+> 注意：`frontend/dist` 一旦被普通 `npm run build`（无 `--mode packaged`）覆盖，
+> 打包版就会去连开发版后端 8766，表现为「后端服务未启动 / 下载失败 / 显示开发机数据」。
+> `build_pack.py` 每次都会重新构建并校验产物里只有 8770，从根上避免这个问题。
 
 端口约定：开发版后端 8766 / Vite 5173；打包版后端 8770 / 静态前端 5174。
 

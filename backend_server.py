@@ -24,6 +24,7 @@ from core.metadata import Metadata  # noqa: E402
 from core.palette import extract_palette, fallback_palette, find_palette_source, mode_css  # noqa: E402
 from core.registry import Registry  # noqa: E402
 from core.we_integration import apply_wallpaper  # noqa: E402
+from core.applog import setup_logging  # noqa: E402
 
 registry = Registry(ROOT / "plugins").discover()
 metadata = Metadata(ROOT / "resources" / "metadata")
@@ -32,6 +33,7 @@ config = Config(ROOT / "resources" / "config.json")
 cdn = registry.get("sources", "cdn")
 if config.get("proxy"):
     cdn.proxy = config.get("proxy") or None
+logger = setup_logging()
 
 _META_MTIMES: dict[str, float] = {}
 # 批量下载取消：前端带 download_id 发起下载，点取消时置位对应 Event，
@@ -660,14 +662,21 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         if not self._guard_local():
             return
-        ensure_fresh_metadata()
-        if self.path.startswith("/api/health"):            self._send(200, {"ok": True, "plugins": registry.summary()})
-        elif self.path.startswith("/api/library/downloaded"):
-            self._send(200, {"ok": True, "skins": downloaded_with_painting()})
-        elif self.path.startswith("/api/config"):
-            self._send(200, get_config())
-        else:
-            self._send(404, {"ok": False, "error": "not found"})
+        try:
+            ensure_fresh_metadata()
+            if self.path.startswith("/api/health"):            self._send(200, {"ok": True, "plugins": registry.summary()})
+            elif self.path.startswith("/api/library/downloaded"):
+                self._send(200, {"ok": True, "skins": downloaded_with_painting()})
+            elif self.path.startswith("/api/config"):
+                self._send(200, get_config())
+            else:
+                self._send(404, {"ok": False, "error": "not found"})
+        except Exception:  # noqa: BLE001
+            logger.exception("GET %s failed", self.path)
+            try:
+                self._send(500, {"ok": False, "error": "internal error"})
+            except Exception:  # noqa: BLE001
+                pass
 
     def do_POST(self) -> None:  # noqa: N802
         if not self._guard_local():
@@ -783,6 +792,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send(404, {"ok": False, "error": "not found"})
         except Exception as e:  # noqa: BLE001
+            logger.exception("POST %s failed", self.path)
             self._send(500, {"ok": False, "error": str(e)})
 
     def log_message(self, *args) -> None:  # noqa: D401
@@ -798,6 +808,7 @@ def main(port: int = 8766) -> None:
     """
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     print(f"backend API listening on http://127.0.0.1:{port}")
+    logger.info("backend API listening on http://127.0.0.1:%s", port)
     server.serve_forever()
 
 

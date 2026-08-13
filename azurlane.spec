@@ -104,6 +104,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="azurlane-wallpaper",
+    icon=os.path.join(SPECPATH, "resources", "icon.ico"),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
