@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>碧蓝航线动态壁纸工具</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; background: #10131a; color: #e8e8ee; }
+    #app { display: flex; align-items: center; justify-content: center; height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <h1>碧蓝航线动态壁纸工具（M0 开发中）</h1>
+  </div>
+  <script>
+    window.addEventListener('pywebviewready', () => {
+      window.pywebview.api.ping().then(console.log);
+    });
+  </script>
+</body>
+</html>
+

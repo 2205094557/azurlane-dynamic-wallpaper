@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #050510; }
+  #bg-layer { position: fixed; inset: 0; z-index: 0; {{BG_CSS}} }
+  #canvas { display: block; width: 100vw; height: 100vh; background: transparent; position: relative; z-index: 1; }
+</style>
+</head>
+<body>
+<div id="bg-layer"></div>
+<canvas id="canvas"></canvas>
+<script src="live2dcubismcore.min.js"></script>
+<script src="wallpaper-layout.js"></script>
+<script>window.__L2D_CONFIG = {{L2D_CONFIG_JSON}};</script>
+<script>window.__L2D_INIT = { scale: {{SCALE}}, ox: {{OFFSET_X}}, oy: {{OFFSET_Y}}, alignment: "{{ALIGNMENT}}", anim: "{{L2D_ANIM}}" };</script>
+<script src="live2d-app.js"></script>
+</body>
+</html>

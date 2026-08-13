@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+resources/
+logs/
+dist/
+build/
+*.spec
+!azurlane.spec
+node_modules/
+frontend/dist/
+references/
+_vision_thumbs/
+.cursor/
+*.log
+static_test_gelifen2.png
+z23_2_small.png
