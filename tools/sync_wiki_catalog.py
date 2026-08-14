@@ -590,6 +590,9 @@ def build_output(groups: list[dict], assigned: dict[str, str], wmap: dict, curre
     report = {"renamed_ships": [], "fixed_skins": [], "missing_wiki": []}
     seen_ships: set[str] = set()
     seen_paintings: set[tuple[str, str]] = set()
+    emitted_paints: set[str] = set()
+    named_bases = {g.get("base_painting", "").lower() for g in groups if g.get("stat_name")}
+    placeholder_groups: list[dict] = []
 
     for g in groups:
         key = assigned.get(g["gid"])
@@ -600,7 +603,22 @@ def build_output(groups: list[dict], assigned: dict[str, str], wmap: dict, curre
         else:
             name = old_name
         if not name:
-            continue
+            # 9xxxxx 新船分组：本地官方表/namecode 解析不出中文名（如 苏维埃同盟）。
+            # 先用基础绘画码（拼音）占位输出，保证能下载；
+            # 之后 wiki/官方数据补全时，match_groups 会接管并自动改成真名。
+            base_b = g.get("base_painting", "").lower()
+            if (
+                is_new_ship_base(base_b)
+                and "_" not in base_b
+                and "-" not in base_b
+                and any(ch.isalpha() for ch in base_b)
+                and base_b not in named_bases
+                and base_b not in emitted_paints
+            ):
+                name = base_b
+                placeholder_groups.append({"gid": g["gid"], "name": base_b})
+            else:
+                continue
 
         cur = cur_by_gid.get(g["gid"], {})
         if w:
@@ -633,6 +651,7 @@ def build_output(groups: list[dict], assigned: dict[str, str], wmap: dict, curre
             painting = v.get("painting", "").lower()
             if painting.startswith("npc"):
                 continue
+            emitted_paints.add(painting)
             key2 = (name, painting)
             if key2 in seen_paintings:
                 continue
@@ -671,6 +690,7 @@ def build_output(groups: list[dict], assigned: dict[str, str], wmap: dict, curre
 
     ships_out.sort(key=lambda x: x["name"])
     skins_out.sort(key=lambda x: (x["ship"], x["bundle"]))
+    report["placeholder_groups"] = placeholder_groups
     # 合并“同名多部件”皮肤：游戏里一个皮肤可能拆成多个 Spine 骨架
     #（如 云龙-溶于重重夜色 = yunlong_2 角色 + yunlong_3 背景），合并为一个条目并记录 parts。
     merged_map: dict[tuple[str, str, str], dict] = {}

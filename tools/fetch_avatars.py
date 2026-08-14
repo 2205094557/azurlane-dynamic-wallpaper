@@ -7,9 +7,14 @@
 产物：
 - resources/avatars/{角色名}.jpg          头像图片（按 ships.json 角色名命名）
 - resources/metadata/avatars.json         角色名 -> 头像文件名的映射
+- resources/metadata/avatars_fingerprint.json  角色名 -> 上次下载的图片 URL（用于自动检测 wiki 换图）
 
 用法：
   python tools/fetch_avatars.py            # 联网抓取并下载（已有文件自动跳过）
+  python tools/fetch_avatars.py --force    # 强制重下所有头像（覆盖占位图/旧图）
+
+自动更新：脚本会记录每张头像的 wiki 图片 URL；若 wiki 上的头像地址与上次
+不同（图鉴更新了头像图），即使本地已有文件也会重新下载。
 """
 
 from __future__ import annotations
@@ -95,7 +100,35 @@ def collect_avatars() -> dict[str, str]:
     return out
 
 
+def ship_page_avatars(names: list[str]) -> dict[str, str]:
+    """图鉴页未收录的新船：按 {船名}头像.jpg 文件名模式批量查 imageinfo（每批 50 个，减少请求数）。
+    返回 {船名: 128px 缩略图URL}。"""
+    out: dict[str, str] = {}
+    for i in range(0, len(names), 50):
+        chunk = names[i:i + 50]
+        titles = "|".join(f"File:{n}头像.jpg" for n in chunk)
+        time.sleep(1.0)
+        try:
+            data = wiki_api({"action": "query", "titles": titles, "prop": "imageinfo", "iiprop": "url", "iiurlwidth": 128})
+        except Exception:  # noqa: BLE001
+            continue
+        for p in data.get("query", {}).get("pages", []):
+            t = p.get("title", "")
+            if not (t.startswith("File:") and t.endswith("头像.jpg")):
+                continue
+            nm = t[len("File:"):-len("头像.jpg")]
+            ii = p.get("imageinfo") or []
+            if ii and ii[0].get("thumburl"):
+                out[nm] = ii[0]["thumburl"]
+    return out
+
+
 def main() -> int:
+    import argparse
+    ap = argparse.ArgumentParser(description="抓取舰船图鉴头像")
+    ap.add_argument("--force", action="store_true", help="强制重下所有头像（覆盖占位图/旧图）")
+    args = ap.parse_args()
+
     ships = json.loads((MD / "ships.json").read_text(encoding="utf-8"))
     ship_norms = {norm(s["name"]): s["name"] for s in ships}
     for alias, wiki_name in NAME_ALIASES.items():
@@ -110,12 +143,20 @@ def main() -> int:
         return 0
     print(f"图鉴头像：{len(avatars)} 个")
 
+    # 上次下载的图片 URL 指纹：wiki 头像换了地址就自动重下，无需 --force
+    FINGERPRINT = MD / "avatars_fingerprint.json"
+    try:
+        last_urls: dict[str, str] = json.loads(FINGERPRINT.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        last_urls = {}
+
     AVATAR_DIR.mkdir(parents=True, exist_ok=True)
     mapping: dict[str, str] = {}
     tasks = []
     retro_tasks: dict[str, str] = {}  # 基础角色名 -> 改头像URL（基础头像缺失时兜底）
     unmatched = []
     existing = 0
+    refresh = 0
     for wiki_name, url in avatars.items():
         app_name = ship_norms.get(norm(wiki_name))
         if not app_name:
@@ -128,10 +169,13 @@ def main() -> int:
             continue
         dest = AVATAR_DIR / f"{app_name}.jpg"
         mapping[app_name] = app_name
-        if dest.exists() and dest.stat().st_size > 500:
+        url_changed = last_urls.get(app_name) not in (None, url)
+        if dest.exists() and dest.stat().st_size > 500 and not args.force and not url_changed:
             existing += 1
             continue
-        tasks.append((app_name, url, dest))
+        if dest.exists() and dest.stat().st_size > 500:
+            refresh += 1
+        tasks.append((app_name, url))
 
     # 基础头像缺失的角色用“改”头像兜底
     for app_name, url in retro_tasks.items():
@@ -139,19 +183,45 @@ def main() -> int:
             continue
         dest = AVATAR_DIR / f"{app_name}.jpg"
         mapping[app_name] = app_name
-        if dest.exists() and dest.stat().st_size > 500:
+        url_changed = last_urls.get(app_name) not in (None, url)
+        if dest.exists() and dest.stat().st_size > 500 and not args.force and not url_changed:
             existing += 1
             continue
-        tasks.append((app_name, url, dest))
+        if dest.exists() and dest.stat().st_size > 500:
+            refresh += 1
+        tasks.append((app_name, url))
+
+    # 图鉴页未收录的新船（如维克斯堡/本宁顿/哈里森）：按 {船名}头像.jpg 批量查 imageinfo
+    missing_ships = [s["name"] for s in ships if s["name"] not in mapping]
+    missing_urls: dict[str, str] = {}
+    for name, url in ship_page_avatars(missing_ships).items():
+        dest = AVATAR_DIR / f"{name}.jpg"
+        mapping[name] = name
+        missing_urls[name] = url
+        url_changed = last_urls.get(name) not in (None, url)
+        if dest.exists() and dest.stat().st_size > 500 and not args.force and not url_changed:
+            existing += 1
+            continue
+        if dest.exists() and dest.stat().st_size > 500:
+            refresh += 1
+        tasks.append((name, url))
 
     def download(item):
-        app_name, url, dest = item
+        app_name, url = item
         try:
             req = urllib.request.Request(url, headers=WIKI_HEADERS)
             with urllib.request.urlopen(req, timeout=30) as r:
                 data = r.read()
-            if len(data) < 500 or not data.startswith(b"\xff\xd8"):
-                return app_name, False, "非JPEG"
+            if len(data) < 500:
+                return app_name, False, "文件过小"
+            # bwiki 头像可能返回 JPEG/PNG/WebP，统一存 .jpg（浏览器按内容嗅探显示）
+            if not (
+                data.startswith(b"\xff\xd8")
+                or data.startswith(b"\x89PNG")
+                or (data.startswith(b"RIFF") and data[8:12] == b"WEBP")
+            ):
+                return app_name, False, "非图片"
+            dest = AVATAR_DIR / f"{app_name}.jpg"
             tmp = dest.with_suffix(".part")
             tmp.write_bytes(data)
             tmp.replace(dest)
@@ -172,10 +242,31 @@ def main() -> int:
                 fail += 1
                 print(f"  ✗ {name}: {err}")
 
+    # 只保留文件真实存在的映射，避免前端出现“有映射无文件”的坏头像
+    mapping = {k: v for k, v in mapping.items() if (AVATAR_DIR / f"{v}.jpg").exists()}
     AVATAR_MAP.write_text(
         json.dumps(mapping, ensure_ascii=False, indent=1), encoding="utf-8"
     )
-    print(f"\n已完成：新下载 {ok}，已有 {existing}，失败 {fail}，头像映射 {len(mapping)} 个角色")
+    # 记录本次实际存在头像的 URL 指纹，供下次检测 wiki 换图（换地址自动重下）
+    fresh_urls: dict[str, str] = {}
+    for app_name, url in tasks:
+        if (AVATAR_DIR / f"{app_name}.jpg").exists():
+            fresh_urls[app_name] = url
+    # 图鉴页主循环里处理过的（未进 tasks 但已存在）也补上指纹
+    for wiki_name, url in avatars.items():
+        app_name = ship_norms.get(norm(wiki_name))
+        if app_name and (AVATAR_DIR / f"{app_name}.jpg").exists():
+            fresh_urls.setdefault(app_name, url)
+    for app_name, url in retro_tasks.items():
+        if (AVATAR_DIR / f"{app_name}.jpg").exists():
+            fresh_urls.setdefault(app_name, url)
+    for name, url in missing_urls.items():
+        if (AVATAR_DIR / f"{name}.jpg").exists():
+            fresh_urls.setdefault(name, url)
+    FINGERPRINT.write_text(
+        json.dumps(fresh_urls, ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+    print(f"\n已完成：新下载 {ok}，刷新 {refresh}，已有 {existing}，失败 {fail}，头像映射 {len(mapping)} 个角色")
     if unmatched:
         print(f"未匹配到角色 {len(unmatched)} 个：")
         for n in sorted(unmatched)[:30]:

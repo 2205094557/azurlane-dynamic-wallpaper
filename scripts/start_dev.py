@@ -60,9 +60,10 @@ CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 DEV_PATTERNS = [
     re.compile(re.escape(str(VENV_PY)) + r'.*backend_server\.py\s*$', re.I),
     re.compile(r'backend_server\.py\s+8766\s*$', re.I),
-    re.compile(re.escape(str(VENV_PY)) + r'.*web_main\.py\s*$', re.I),
+    re.compile(r'web_main\.py\s*$', re.I),
     re.compile(re.escape(str(FRONTEND)) + r'.*vite.*?\.js', re.I),
 ]
+WINDOW_RE = re.compile(r'web_main\.py\s*$', re.I)
 
 
 def log(msg: str) -> None:
@@ -113,6 +114,23 @@ def find_dev_pids() -> set[int]:
         if any(pat.search(cmd) for pat in DEV_PATTERNS):
             found.add(pid)
     return found
+
+
+def window_alive() -> bool:
+    """判断源码版窗口是否真的存活。
+
+    注意：.venv 的 pythonw 是壳进程，可能先于运行时子进程退出，
+    用 Popen.poll() 等壳进程会误判“窗口已关闭”而把整个栈清掉/重复开窗。
+    这里按命令行匹配 web_main.py 进程（壳 + 运行时子进程都算）。"""
+    for p in all_processes():
+        cmd = p.get("CommandLine") or ""
+        pid = p.get("ProcessId")
+        try:
+            if int(pid) > 0 and WINDOW_RE.search(cmd):
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
 
 
 def port_owner(port: int) -> int | None:
@@ -328,11 +346,22 @@ def main() -> int:
     write_state(state)
 
     log("全部就绪。关闭应用窗口后，后端与 Vite 会自动退出；Ctrl+C 也可清理。")
+    spawn_time = time.time()
+    restarts = 0
     try:
         while True:
-            rc = window.poll()
-            if rc is not None:
-                log(f"窗口已关闭（exit={rc}），正在清理 ...")
+            if not window_alive():
+                uptime = time.time() - spawn_time
+                if uptime < 20 and restarts < 3:
+                    restarts += 1
+                    log(f"窗口异常退出（运行 {uptime:.0f}s），第 {restarts} 次自动重启 ...")
+                    window = spawn([str(VENV_PY), "web_main.py"], ROOT)
+                    state = read_state()
+                    state["window"] = window.pid
+                    write_state(state)
+                    spawn_time = time.time()
+                    continue
+                log(f"窗口已关闭（运行 {uptime:.0f}s），正在清理 ...")
                 break
             if backend.poll() is not None:
                 log("警告：后端进程意外退出")

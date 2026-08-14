@@ -14,6 +14,7 @@ from pathlib import Path
 
 import webview
 
+from core.applog import setup_logging
 from web_backend import WebApi
 
 DEV_URL = "http://127.0.0.1:5173"
@@ -22,6 +23,7 @@ PREFS_FILE = APP_DATA / "prefs.json"
 WEBVIEW_DATA = APP_DATA / "webview"
 DEFAULT_SIZE = (1380, 860)
 MIN_SIZE = (1000, 640)
+logger = setup_logging()
 
 
 def load_prefs() -> dict:
@@ -57,6 +59,7 @@ def centered_position(width: int, height: int) -> tuple[int | None, int | None]:
 def main() -> None:
     api = WebApi()
     url = DEV_URL if len(sys.argv) < 2 else sys.argv[1]
+    logger.info("web_main start: url=%s", url)
     prefs = load_prefs()
     width = max(MIN_SIZE[0], int(prefs.get("width", DEFAULT_SIZE[0])))
     height = max(MIN_SIZE[1], int(prefs.get("height", DEFAULT_SIZE[1])))
@@ -74,6 +77,7 @@ def main() -> None:
         min_size=MIN_SIZE,
         maximized=maximized,
     )
+    logger.info("window created, calling webview.start")
 
     last_size = {"width": width, "height": height}
     save_lock = threading.Lock()
@@ -118,6 +122,7 @@ def main() -> None:
         persist(lambda p: p.update({**last_size, "maximized": False}))
 
     def on_closing() -> None:
+        logger.info("window closing event")
         if save_timer:
             save_timer.cancel()
         persist(lambda p: p.update(last_size))
@@ -128,11 +133,16 @@ def main() -> None:
     window.events.closing += on_closing
 
     # private_mode=False + 固定 storage_path：localStorage（收藏等）跨重启保留
-    webview.start(
-        debug=False,
-        private_mode=False,
-        storage_path=str(WEBVIEW_DATA),
-    )
+    try:
+        webview.start(
+            debug=False,
+            private_mode=False,
+            storage_path=str(WEBVIEW_DATA),
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("webview.start failed")
+        raise
+    logger.info("webview.start returned, app exiting")
 
 
 if __name__ == "__main__":

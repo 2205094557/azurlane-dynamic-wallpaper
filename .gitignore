@@ -11,8 +11,9 @@ build/
 node_modules/
 frontend/dist/
 references/
-_vision_thumbs/
+.vite/
 .cursor/
 *.log
-static_test_gelifen2.png
-z23_2_small.png
+# 语音解码器（vgmstream 二进制，10MB+）：与 references/ 同策略，
+# 本地机器工具不入库，由 build_pack.py 自检保证打包版存在
+tools/vgmstream/

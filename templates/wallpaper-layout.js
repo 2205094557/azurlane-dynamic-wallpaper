@@ -92,6 +92,205 @@
     }
   }
 
+  /*
+   * Live2D 点击/拖拽互动（预览与导出共用，单一事实来源）。
+   *
+   * 碧蓝官方 model3.json 不声明 HitAreas，但每个 moc3 都内置官方命中部件
+   * TouchHead / TouchSpecial / TouchBody；富互动模型还带 TouchDrag1..N /
+   * TouchIdle1..N（对应 touch_dragN / touch_idleN 动作）。setupL2DHitAreas
+   * 动态探测并注入 internalModel.settings.hitAreas，之后 model.hitTest() 即生效
+   * （无需 fork 库）。
+   * 动作播放/恢复由调用方（预览组件或导出运行时）通过回调实现，本模块只做状态机。
+   */
+  var L2D_DRAG_THRESHOLD = 6 // 位移超过该像素数判定为拖拽而非点击
+  var L2D_MAX_NUM_AREAS = 40
+
+  function probeDrawable(core, id) {
+    return typeof core.getDrawableIndex === 'function' && core.getDrawableIndex(id) >= 0
+  }
+
+  /*
+   * 发现并注入 moc3 自带的全部 Touch* 命中部件。
+   * 命中区 Name 直接用动作名（touch_body / touch_drag11 / touch_idle16 …），
+   * 这样 hitTest() 返回的就是可直接播放的动作名。
+   * 返回注入的 {Id: 动作名} 映射；无任何命中部件返回 null。
+   */
+  function setupL2DHitAreas(model) {
+    var im = model && model.internalModel
+    if (!im || !im.settings || !im.coreModel) return null
+    var core = im.coreModel
+    var found = {}
+    var fixed = {
+      TouchBody: 'touch_body',
+      TouchHead: 'touch_head',
+      TouchSpecial: 'touch_special',
+    }
+    var id
+    for (id in fixed) if (probeDrawable(core, id)) found[id] = fixed[id]
+    var miss = 0
+    for (var i = 1; i <= L2D_MAX_NUM_AREAS; i++) {
+      id = 'TouchDrag' + i
+      if (probeDrawable(core, id)) { found[id] = 'touch_drag' + i; miss = 0 }
+      else if (++miss >= 3) break
+    }
+    miss = 0
+    for (var j = 1; j <= L2D_MAX_NUM_AREAS; j++) {
+      id = 'TouchIdle' + j
+      if (probeDrawable(core, id)) { found[id] = 'touch_idle' + j; miss = 0 }
+      else if (++miss >= 3) break
+    }
+    var defs = []
+    for (id in found) defs.push({ Name: found[id], Id: id })
+    if (!defs.length) return null
+    im.settings.hitAreas = defs
+    if (typeof im.setupHitAreas === 'function') im.setupHitAreas()
+    return found
+  }
+
+  // 命中优先级：头 > 特殊 > 具体部位(拖拽/待机) > 身体兜底（TouchBody 包围盒通常覆盖全身）
+  function hitPriority(label) {
+    if (/^touch_head/i.test(label)) return 5
+    if (/^touch_special/i.test(label)) return 4
+    if (/^touch_drag/i.test(label)) return 3
+    if (/^touch_idle/i.test(label)) return 2
+    if (/^touch_body/i.test(label)) return 1
+    return 0
+  }
+
+  function hitLabelAt(model, pt) {
+    var names = []
+    try { names = model.hitTest(pt.x, pt.y) || [] } catch (e) { names = [] }
+    var best = null
+    var bestP = -1
+    for (var i = 0; i < names.length; i++) {
+      var p = hitPriority(names[i])
+      if (p > bestP) { bestP = p; best = names[i] }
+    }
+    return best
+  }
+
+  /*
+   * l2dInteraction(model, el, opts) → { setEnabled(bool), hitAreas(), destroy() }
+   *  opts:
+   *    play(label, fromDrag) 播放动作；fromDrag=true 表示拖拽触发（调用方不要记为“当前动作”）
+   *    dragLabels()          可用拖拽动作 label 列表（无则 []）
+   *    revert()              拖拽结束恢复拖拽前的动作
+   * 约定：按下起点必须在模型包围盒内；点按播放按下部位的 touch_*，
+   * 拖拽优先播放该部位的 touch_dragN，没有则随机 touch_drag*。
+   */
+  function l2dInteraction(model, el, opts) {
+    opts = opts || {}
+    var enabled = false
+    var down = null
+    // 防御性：确保命中区已注入（导出模板可能已显式调用，重复注入无害）
+    setupL2DHitAreas(model)
+
+    function clientPoint(e) {
+      var r = el.getBoundingClientRect()
+      return { x: e.clientX - r.left, y: e.clientY - r.top }
+    }
+
+    function inModelBox(pt) {
+      try {
+        var b = model.getBounds()
+        return b.x <= pt.x && pt.x <= b.x + b.width && b.y <= pt.y && pt.y <= b.y + b.height
+      } catch (e) { return false }
+    }
+
+    function onPointerDown(e) {
+      if (!enabled) return
+      if (e.button != null && e.button !== 0) return
+      var pt = clientPoint(e)
+      // 不再要求按下起点必须在模型包围盒内：互动模式下任何按下都武装拖拽，
+      // 避免按在角色边缘/模型框外时拖了没反应；点击仍按命中区判定（背景点击无反应）。
+      down = { x: pt.x, y: pt.y, label: hitLabelAt(model, pt), dragged: false }
+    }
+
+    function onPointerMove(e) {
+      if (!enabled || !down) return
+      var pt = clientPoint(e)
+      var dx = pt.x - down.x
+      var dy = pt.y - down.y
+      if (!down.dragged && Math.sqrt(dx * dx + dy * dy) > L2D_DRAG_THRESHOLD) {
+        down.dragged = true
+        var label = null
+        if (down.label && /^touch_drag/i.test(down.label)) label = down.label
+        if (!label) {
+          var labels = (opts.dragLabels && opts.dragLabels()) || []
+          if (labels.length) label = labels[Math.floor(Math.random() * labels.length)]
+        }
+        if (label && opts.play) opts.play(label, true)
+      }
+    }
+
+    function onPointerUp(e) {
+      if (!enabled || !down) return
+      var d = down
+      down = null
+      if (d.dragged) {
+        // 松手后保持拖拽动画继续播放（不自动恢复），由下一次点击/拖动切换
+        return
+      }
+      if (d.label && opts.play) opts.play(d.label, false)
+    }
+
+    function onPointerCancel() {
+      if (!enabled || !down) return
+      down = null
+    }
+
+    el.addEventListener('pointerdown', onPointerDown)
+    el.addEventListener('pointermove', onPointerMove)
+    el.addEventListener('pointerup', onPointerUp)
+    el.addEventListener('pointercancel', onPointerCancel)
+
+    return {
+      setEnabled: function (v) { enabled = !!v },
+      hitAreas: function () {
+        var im = model && model.internalModel
+        return (im && im.hitAreas) ? Object.keys(im.hitAreas) : []
+      },
+      destroy: function () {
+        el.removeEventListener('pointerdown', onPointerDown)
+        el.removeEventListener('pointermove', onPointerMove)
+        el.removeEventListener('pointerup', onPointerUp)
+        el.removeEventListener('pointercancel', onPointerCancel)
+      },
+    }
+  }
+
+  /*
+   * l2dHitAreaRects(model) → [{ label, kind, rect:{x,y,w,h} }]（画布坐标系，供命中区叠加显示）。
+   * 命中区包围盒来自 drawable 顶点（模型空间），经模型世界变换换算到屏幕坐标。
+   */
+  function l2dHitAreaRects(model) {
+    var im = model && model.internalModel
+    if (!im || !im.hitAreas) return []
+    var out = []
+    var names = Object.keys(im.hitAreas)
+    for (var i = 0; i < names.length; i++) {
+      var def = im.hitAreas[names[i]]
+      var b = null
+      try { b = im.getDrawableBounds(def.index, {}) } catch (e) { b = null }
+      if (!b || !isFinite(b.x) || !isFinite(b.y)) continue
+      var corners = [
+        model.toGlobal({ x: b.x, y: b.y }),
+        model.toGlobal({ x: b.x + b.width, y: b.y }),
+        model.toGlobal({ x: b.x, y: b.y + b.height }),
+        model.toGlobal({ x: b.x + b.width, y: b.y + b.height }),
+      ]
+      var minX = Math.min(corners[0].x, corners[1].x, corners[2].x, corners[3].x)
+      var maxX = Math.max(corners[0].x, corners[1].x, corners[2].x, corners[3].x)
+      var minY = Math.min(corners[0].y, corners[1].y, corners[2].y, corners[3].y)
+      var maxY = Math.max(corners[0].y, corners[1].y, corners[2].y, corners[3].y)
+      if (maxX - minX < 1 || maxY - minY < 1) continue
+      var label = names[i].replace(/^touch_/, '')
+      var kind = /^drag/i.test(label) ? 'drag' : (/^idle/i.test(label) ? 'idle' : label)
+      out.push({ label: label, kind: kind, rect: { x: minX, y: minY, w: maxX - minX, h: maxY - minY } })
+    }
+    return out
+  }
+
   root.WallpaperLayout = {
     MARGIN: MARGIN,
     MIN_SCALE: MIN_SCALE,
@@ -105,5 +304,8 @@
     anchor: anchor,
     spineCamera: spineCamera,
     l2dLayout: l2dLayout,
+    setupL2DHitAreas: setupL2DHitAreas,
+    l2dInteraction: l2dInteraction,
+    l2dHitAreaRects: l2dHitAreaRects,
   }
 })(typeof window !== 'undefined' ? window : this)

@@ -123,10 +123,13 @@
               :offset-x="offsetX"
               :offset-y="offsetY"
               :alignment="alignment"
+              :interaction-mode="interactionMode"
+              :show-hit-areas="showHitAreas"
               @animations="onSpineAnims"
               @error="onEngineError"
               @scale-change="scale = $event"
               @pan-change="offsetX = $event.x; offsetY = $event.y"
+              @subtitle="l2dSubtitle = $event"
             />
             <StaticPreview
               v-else-if="currentSkin && currentSkin.type === 'static' && currentSkin.asset"
@@ -149,6 +152,45 @@
             <div v-if="selectedShip && currentSkin" class="stage-info">
               <span class="stage-info-name">{{ selectedShip.name }}</span>
               <span class="stage-info-skin">{{ currentSkin.name }}</span>
+            </div>
+            <div v-if="currentSkin && currentSkin.type === 'live2d'" class="l2d-panel-a" :class="{ collapsed: l2dPanelCollapsed }">
+              <div class="l2d-panel-a-head">
+                <span class="l2d-panel-a-title"><span class="l2d-panel-a-dot"></span>互动控制</span>
+                <button class="l2d-panel-a-collapse" :title="l2dPanelCollapsed ? '展开互动面板' : '收起互动面板'" @click="l2dPanelCollapsed = !l2dPanelCollapsed">
+                  {{ l2dPanelCollapsed ? '⚙' : '−' }}
+                </button>
+              </div>
+              <div v-if="!l2dPanelCollapsed" class="l2d-panel-a-body">
+                <div class="l2d-seg" :class="{ 'on-interact': interactionMode }">
+                  <div class="l2d-seg-thumb"></div>
+                  <button class="l2d-seg-item" :class="{ active: !interactionMode }" @click="interactionMode = false">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"/></svg>
+                    拖拽
+                  </button>
+                  <button class="l2d-seg-item" :class="{ active: interactionMode }" @click="interactionMode = true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11v-2a2 2 0 0 1 4 0v2M7 11h4M9 11v5M13 8a2 2 0 0 1 4 0v4M15 12v5"/><path d="M15 12h2a2 2 0 0 1 2 2v2a5 5 0 0 1-5 5h-1a5 5 0 0 1-5-5v-1"/></svg>
+                    互动
+                  </button>
+                </div>
+                <div class="l2d-switch-row">
+                  <span class="l2d-switch-ico" :class="{ on: voiceEnabled }">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>
+                  </span>
+                  <div class="l2d-switch-txt">互动语音<small>点击角色时播放台词</small></div>
+                  <span class="l2d-switch" :class="{ on: voiceEnabled }" :title="voiceEnabled ? '关闭互动语音与台词' : '开启互动语音与台词'" @click="toggleVoice"></span>
+                </div>
+                <div class="l2d-switch-row">
+                  <span class="l2d-switch-ico" :class="{ on: showHitAreas }">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>
+                  </span>
+                  <div class="l2d-switch-txt">交互区域<small>显示点击可触发区域</small></div>
+                  <span class="l2d-switch" :class="{ on: showHitAreas }" :title="showHitAreas ? '隐藏交互区域' : '显示交互区域'" @click="showHitAreas = !showHitAreas"></span>
+                </div>
+                <div class="l2d-subtitle-a" :class="{ empty: !l2dSubtitle }">
+                  <span v-if="l2dSubtitle" class="l2d-subtitle-a-who">{{ selectedShip ? selectedShip.name : '' }} · {{ currentSkin ? currentSkin.name : '' }}</span>
+                  {{ l2dSubtitle || '点击角色互动，台词显示在这里' }}
+                </div>
+              </div>
             </div>
             <span class="zoom-hint">缩放 {{ scale }}%</span>
             <button class="stage-fullscreen-btn" @click="toggleFullscreen" :title="fullscreen ? '退出全屏' : '全屏预览'">
@@ -367,8 +409,8 @@
       <n-button size="small" type="primary" :disabled="!selectedSet.size" :loading="batchDownloading" @click="batchDownload">
         {{ batchDownloading ? `下载中 ${batchDone}/${batchTotal}` : '批量下载所选' }}
       </n-button>
-      <button class="wc-btn gradient batch-btn" @click="selectAllFiltered">全选</button>
-      <button class="wc-btn gradient batch-btn" @click="clearSelection">清空</button>
+      <button class="wc-btn gold batch-btn" @click="selectAllFiltered">全选</button>
+      <button class="wc-btn gold batch-btn" @click="clearSelection">清空</button>
     </div>
 
     <div v-if="downloadMsg" class="download-msg">{{ downloadMsg }}</div>
@@ -376,7 +418,7 @@
     <div v-if="dlProgress.active" class="dl-progress-card">
       <div class="dl-progress-head">
         <span class="dl-progress-label">{{ dlProgress.label }}</span>
-        <button class="wc-btn gradient dl-progress-cancel" :disabled="cancelling" @click="onCancelDownloads">
+        <button class="wc-btn danger-soft dl-progress-cancel" :disabled="cancelling" @click="onCancelDownloads">
           {{ cancelling ? '正在取消…' : '取消' }}
         </button>
       </div>
@@ -388,6 +430,7 @@
         <span v-if="dlProgress.failed">（{{ dlProgress.failed }} 失败）</span>
         <span v-if="cancelling">正在停止…</span>
       </div>
+      <div v-if="dlStage" class="dl-progress-stage">{{ dlStage }}</div>
     </div>
 
   </div>
@@ -397,8 +440,9 @@
 import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NButton, NInput, NSelect, NSlider, NAlert } from 'naive-ui'
-import { assetUrl, bridge, metadataUrl } from '../../bridge'
+import { assetUrl, bridge, metadataUrl, sseUrl } from '../../bridge'
 import { playChime, warmAudio } from '../../utils/sound'
+import { voiceEnabled, toggleVoice } from '../../utils/voice'
 import SpinePreview from '../../components/SpinePreview.vue'
 import Live2DPreview from '../../components/Live2DPreview.vue'
 import StaticPreview from '../../components/StaticPreview.vue'
@@ -428,6 +472,8 @@ const skinFavs = ref(new Set())
 const favOnly = ref(false)
 const avatars = ref({})
 const avatarFailed = ref(new Set())
+// avatars.json 的加载时间戳：拼到图片 URL 上，头像更新后重新加载图片（避免浏览器缓存旧图）
+const avatarsStamp = ref(0)
 const multiMode = ref(false)
 const selectedSet = ref(new Set())
 const batchDownloading = ref(false)
@@ -438,6 +484,8 @@ const batchCancelled = ref(0)
 const downloadBatchId = ref('')
 const cancelling = ref(false)
 const dlProgress = reactive({ active: false, done: 0, total: 0, failed: 0, cancelled: 0, label: '' })
+const dlStage = ref('')
+let dlSource = null
 const previewEl = ref(null)
 
 const batchPct = computed(() => {
@@ -494,6 +542,10 @@ const scale = ref(100)
 const offsetX = ref(0)
 const offsetY = ref(0)
 const alignment = ref('center')
+const interactionMode = ref(false)
+const l2dSubtitle = ref('')
+const l2dPanelCollapsed = ref(false)
+const showHitAreas = ref(false)
 
 const bgOptions = [
   { label: '自动取色', value: 'auto' },
@@ -529,7 +581,14 @@ const filtered = computed(() => {
   return ships.value.filter((s) => {
     const kw = filters.search.trim().toLowerCase()
     const skinHit = kw && s.skins.some((k) => (k.name || '').toLowerCase().includes(kw))
-    if (kw && !s.name.toLowerCase().includes(kw) && !(s.en || '').toLowerCase().includes(kw) && !skinHit) return false
+    if (
+      kw &&
+      !s.name.toLowerCase().includes(kw) &&
+      !(s.en || '').toLowerCase().includes(kw) &&
+      !pyText(s.py).includes(kw) &&
+      !s.skins.some((k) => pyText(k.py).includes(kw)) &&
+      !skinHit
+    ) return false
     const types = new Set(s.skins.map((k) => k.type))
     if (filters.type !== 'all' && !types.has(filters.type)) return false
     if (filters.faction && s.faction !== filters.faction) return false
@@ -555,7 +614,9 @@ const filteredSkins = computed(() => {
         kw &&
         !ship.name.toLowerCase().includes(kw) &&
         !(ship.en || '').toLowerCase().includes(kw) &&
-        !(skin.name || '').toLowerCase().includes(kw)
+        !pyText(ship.py).includes(kw) &&
+        !(skin.name || '').toLowerCase().includes(kw) &&
+        !pyText(skin.py).includes(kw)
       ) {
         continue
       }
@@ -588,6 +649,12 @@ watch(() => filters.type, () => clearSelection())
 
 const selectedShip = computed(() => ships.value.find((s) => s.id === selectedId.value) || null)
 const currentSkin = computed(() => selectedShip.value?.skins[currentSkinIndex.value] || null)
+// 切换皮肤时清空右侧面板台词，避免残留上一个皮肤的语音文本
+//（watch 注册时会立即求值一次 getter，必须放在 currentSkin 定义之后）
+watch(
+  () => currentSkin.value && currentSkin.value.key,
+  () => { l2dSubtitle.value = '' },
+)
 
 const bgCss = ref('')
 const solidColor = ref('')
@@ -636,7 +703,9 @@ function avatarStyle(ship) {
 function avatarUrl(ship) {
   const f = avatars.value[ship.name]
   if (!f || avatarFailed.value.has(ship.name)) return ''
-  return assetUrl(`avatars/${f}.jpg`)
+  // 拼时间戳：头像映射更新后（检查更新/重启）URL 变化，浏览器会重新拉取图片
+  const stamp = avatarsStamp.value ? `?v=${avatarsStamp.value}` : ''
+  return assetUrl(`avatars/${f}.jpg`) + stamp
 }
 
 function onAvatarError(ship) {
@@ -650,6 +719,11 @@ function rarityClass(r) {
   if (r === '超稀有') return 'gold'
   if (r === '精锐') return 'blue'
   return 'green'
+}
+
+// 拼音检索：匹配全拼（weikesibao）或首字母（wksb）
+function pyText(py) {
+  return py ? `${py.p || ''} ${py.i || ''}` : ''
 }
 
 function shipTypes(ship) {
@@ -689,11 +763,35 @@ function startDl(label, total) {
   dlProgress.cancelled = 0
   dlProgress.total = total
   dlProgress.label = label
+  dlStage.value = ''
+  if (dlSource) {
+    dlSource.close()
+    dlSource = null
+  }
+  // SSE：实时显示 下载立绘/合成/同步索引 等当前阶段（后端不支持时静默降级）
+  try {
+    dlSource = new EventSource(sseUrl())
+    dlSource.addEventListener('stage', (e) => {
+      try {
+        const d = JSON.parse(e.data)
+        dlStage.value = d.detail ? `${d.stage}：${d.detail}` : (d.stage || '')
+      } catch (err) {
+        /* 忽略异常事件 */
+      }
+    })
+  } catch (err) {
+    /* 后端未开 SSE 时静默 */
+  }
 }
 
 function finishDl() {
   dlProgress.active = false
   downloadBatchId.value = ''
+  if (dlSource) {
+    dlSource.close()
+    dlSource = null
+  }
+  dlStage.value = ''
 }
 
 async function onCancelDownloads() {
@@ -857,8 +955,9 @@ function railStep(dir) {
   } else {
     cur = list.findIndex((s) => s.id === selectedId.value)
   }
-  if (cur < 0) cur = -1
-  const next = (cur + dir + list.length) % list.length
+  // 当前项不在筛选列表（搜索/筛选导致）时：next 从第一项开始，prev 从最后一项开始。
+  // 原来的 (cur+dir+len)%len 在 cur=-1 时 prev 会算出 len-2，跳过头一项。
+  const next = cur < 0 ? (dir > 0 ? 0 : list.length - 1) : (cur + dir + list.length) % list.length
   if (skinMode.value) selectSkinItem(list[next])
   else selectShip(list[next])
 }
@@ -1158,6 +1257,8 @@ onMounted(async () => {
   loadFavs()
   try {
     avatars.value = await (await fetch(metadataUrl('avatars.json'), { cache: 'no-store' })).json()
+    avatarsStamp.value = Date.now()
+    avatarFailed.value = new Set()
   } catch (e) {
     avatars.value = {}
   }
@@ -1188,6 +1289,9 @@ onActivated(async () => {
   }
   try {
     avatars.value = await (await fetch(metadataUrl('avatars.json'), { cache: 'no-store' })).json()
+    // 头像映射刷新：更新版本戳（图片 URL 变化强制重载），并清失败集合让占位角色重试
+    avatarsStamp.value = Date.now()
+    avatarFailed.value = new Set()
   } catch (e) {
     /* 头像缺失时回退首字 */
   }
@@ -1290,52 +1394,56 @@ onBeforeUnmount(() => {
 .rail-tool {
   flex: 1;
   text-align: center;
-  padding: 5px 0;
+  padding: 6px 0;
   border-radius: 999px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.7);
   color: var(--muted);
   cursor: pointer;
   font-size: 12px;
   font-weight: 300;
-  transition: all 0.4s ease-out;
+  transition: all 0.3s ease-out;
+  user-select: none;
 }
 
 .rail-tool:hover {
   color: var(--blue);
-  border-color: rgba(74, 111, 165, 0.4);
+  border-color: rgba(74, 111, 165, 0.5);
+  background: #fff;
 }
 
 .rail-tool.active {
-  background: rgba(74, 111, 165, 0.15);
-  border-color: rgba(74, 111, 165, 0.45);
-  color: #4a6fa5;
-  box-shadow: 0 4px 20px rgba(74, 111, 165, 0.12);
+  background: linear-gradient(135deg, rgba(74, 111, 165, 0.16), rgba(133, 205, 202, 0.14));
+  border-color: rgba(74, 111, 165, 0.55);
+  color: #3a5a88;
+  box-shadow: 0 4px 16px rgba(74, 111, 165, 0.14);
 }
 
 .type-pill {
   flex: 1;
   text-align: center;
-  padding: 6px 0;
+  padding: 7px 0;
   border-radius: 999px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.7);
   color: var(--muted);
   cursor: pointer;
   font-size: 12px;
   transition: all 0.3s ease-out;
+  user-select: none;
 }
 
 .type-pill:hover {
   color: var(--blue);
-  border-color: rgba(74, 111, 165, 0.4);
+  border-color: rgba(74, 111, 165, 0.5);
+  background: #fff;
 }
 
 .type-pill.active {
-  background: linear-gradient(135deg, rgba(74, 111, 165, 0.2), rgba(180, 120, 140, 0.16));
-  border-color: rgba(74, 111, 165, 0.45);
-  color: var(--ink);
-  box-shadow: var(--shadow-soft);
+  background: linear-gradient(135deg, rgba(74, 111, 165, 0.16), rgba(133, 205, 202, 0.14));
+  border-color: rgba(74, 111, 165, 0.55);
+  color: #3a5a88;
+  box-shadow: 0 4px 16px rgba(74, 111, 165, 0.14);
 }
 
 .rail-list {
@@ -1516,6 +1624,265 @@ onBeforeUnmount(() => {
   color: rgba(240, 235, 227, 0.75);
 }
 
+/* ---- L2D 互动控制面板（方案 A · 航海指挥面板） ---- */
+.l2d-panel-a {
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 6;
+  width: 252px;
+  background: linear-gradient(165deg, rgba(24, 34, 58, 0.78), rgba(10, 14, 24, 0.66));
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 18px;
+  padding: 12px 12px 10px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(14px);
+  font-family: var(--font-sans);
+  transition: all 0.25s ease;
+}
+
+.l2d-panel-a.collapsed {
+  width: 46px;
+  padding: 10px 0;
+}
+
+.l2d-panel-a-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.l2d-panel-a-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-serif);
+  font-size: 13px;
+  letter-spacing: 3px;
+  color: rgba(240, 235, 227, 0.92);
+}
+
+.l2d-panel-a-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--gold);
+  box-shadow: 0 0 8px rgba(201, 168, 76, 0.8);
+}
+
+.l2d-panel-a-collapse {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.35);
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.2s ease;
+}
+
+.l2d-panel-a-collapse:hover {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+.l2d-panel-a.collapsed .l2d-panel-a-head {
+  margin-bottom: 0;
+  justify-content: center;
+}
+
+.l2d-panel-a.collapsed .l2d-panel-a-body {
+  display: none;
+}
+
+/* 分段控件：拖拽 / 互动 */
+.l2d-seg {
+  position: relative;
+  display: flex;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 12px;
+  padding: 3px;
+  margin-bottom: 8px;
+}
+
+.l2d-seg-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: calc(50% - 3px);
+  height: calc(100% - 6px);
+  border-radius: 10px;
+  background: linear-gradient(120deg, rgba(74, 111, 165, 0.9), rgba(133, 205, 202, 0.85));
+  box-shadow: 0 4px 14px rgba(74, 111, 165, 0.45);
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.l2d-seg.on-interact .l2d-seg-thumb {
+  transform: translateX(100%);
+}
+
+.l2d-seg-item {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 0;
+  font-size: 12.5px;
+  letter-spacing: 2px;
+  font-family: var(--font-sans);
+  color: rgba(255, 255, 255, 0.78);
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.25s ease;
+  border: none;
+  background: transparent;
+}
+
+.l2d-seg-item.active {
+  color: #fff;
+  font-weight: 500;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+.l2d-seg-item svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+/* 开关行 */
+.l2d-switch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 4px;
+  border-radius: 12px;
+  transition: background 0.2s ease;
+}
+
+.l2d-switch-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.l2d-switch-ico {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(240, 235, 227, 0.85);
+}
+
+.l2d-switch-ico.on {
+  color: var(--gold);
+  background: rgba(201, 168, 76, 0.22);
+}
+
+.l2d-switch-txt {
+  flex: 1;
+  font-size: 12.5px;
+  letter-spacing: 1px;
+  color: rgba(240, 235, 227, 0.9);
+}
+
+.l2d-switch-txt small {
+  display: block;
+  font-size: 10.5px;
+  color: rgba(240, 235, 227, 0.5);
+  letter-spacing: 0.5px;
+  margin-top: 1px;
+}
+
+.l2d-switch {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  flex: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  cursor: pointer;
+  transition: background 0.25s ease;
+}
+
+.l2d-switch::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.l2d-switch.on {
+  background: linear-gradient(120deg, rgba(201, 168, 76, 0.9), rgba(180, 120, 140, 0.85));
+}
+
+.l2d-switch.on::after {
+  transform: translateX(16px);
+}
+
+/* 台词框 */
+.l2d-subtitle-a {
+  position: relative;
+  margin-top: 9px;
+  padding: 12px 14px 11px 18px;
+  max-height: 120px;
+  overflow-y: auto;
+  box-sizing: border-box;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 13px;
+  line-height: 1.7;
+  color: rgba(255, 255, 255, 0.92);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+}
+
+.l2d-subtitle-a::before {
+  content: '“';
+  position: absolute;
+  left: 6px;
+  top: 2px;
+  font-family: var(--font-serif);
+  font-size: 26px;
+  line-height: 1;
+  color: rgba(201, 168, 76, 0.75);
+}
+
+.l2d-subtitle-a-who {
+  display: block;
+  font-size: 10.5px;
+  letter-spacing: 2px;
+  color: var(--gold);
+  margin-bottom: 3px;
+}
+
+.l2d-subtitle-a.empty {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 12px;
+}
+
+.l2d-subtitle-a.empty::before {
+  display: none;
+}
+
 .stage-fullscreen-btn {
   position: absolute;
   top: 14px;
@@ -1524,17 +1891,19 @@ onBeforeUnmount(() => {
   width: 34px;
   height: 34px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  background: rgba(10, 14, 24, 0.4);
-  color: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(10, 14, 24, 0.42);
+  backdrop-filter: blur(6px);
+  color: rgba(255, 255, 255, 0.9);
   font-size: 14px;
   cursor: pointer;
   transition: all 0.3s ease-out;
 }
 
 .stage-fullscreen-btn:hover {
-  background: rgba(10, 14, 24, 0.65);
-  transform: scale(1.05);
+  background: rgba(10, 14, 24, 0.62);
+  transform: scale(1.08);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
 }
 
 /* ---- 皮肤切换条 ---- */
@@ -1646,6 +2015,7 @@ onBeforeUnmount(() => {
   border-radius: 10px;
   font-size: 14px;
   line-height: 1.4;
+  min-width: 36px;
 }
 
 .anim-nav-label {
@@ -1677,9 +2047,9 @@ onBeforeUnmount(() => {
 }
 
 .panel-nav-btn.active {
-  background: rgba(74, 111, 165, 0.15);
-  border-color: rgba(74, 111, 165, 0.45);
-  color: #4a6fa5;
+  background: linear-gradient(135deg, rgba(74, 111, 165, 0.16), rgba(133, 205, 202, 0.14));
+  border-color: rgba(74, 111, 165, 0.55);
+  color: #3a5a88;
 }
 
 .bar-dim {
@@ -1803,27 +2173,27 @@ onBeforeUnmount(() => {
 /* 皮肤收藏星标（皮肤切换条右侧，始终可点击） */
 .skin-fav-btn {
   border: none;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   border-radius: 999px;
-  background: linear-gradient(135deg, rgba(74, 111, 165, 0.18), rgba(133, 205, 202, 0.22));
+  background: linear-gradient(135deg, rgba(74, 111, 165, 0.14), rgba(133, 205, 202, 0.18));
   border: 1px solid rgba(74, 111, 165, 0.35);
   color: rgba(74, 111, 165, 0.75);
   font-size: 15px;
   cursor: pointer;
   display: inline-grid;
   place-items: center;
-  transition: transform 0.2s ease-out, color 0.2s ease-out;
+  transition: transform 0.25s ease-out, color 0.25s ease-out, box-shadow 0.25s ease-out;
 }
 .skin-fav-btn:hover {
-  transform: scale(1.15);
-  box-shadow: 0 4px 16px rgba(74, 111, 165, 0.25);
+  transform: scale(1.12);
+  box-shadow: 0 4px 14px rgba(74, 111, 165, 0.25);
 }
 .skin-fav-btn.on {
-  background: linear-gradient(135deg, rgba(212, 175, 55, 0.85), rgba(255, 214, 102, 0.9));
-  border-color: rgba(212, 175, 55, 0.6);
+  background: linear-gradient(135deg, rgba(201, 168, 76, 0.9), rgba(240, 200, 90, 0.95));
+  border-color: rgba(201, 168, 76, 0.65);
   color: #fff;
-  box-shadow: 0 4px 16px rgba(212, 175, 55, 0.35);
+  box-shadow: 0 4px 16px rgba(201, 168, 76, 0.4);
 }
 
 /* 批量操作栏内的渐变按钮 */
@@ -1881,6 +2251,15 @@ onBeforeUnmount(() => {
   margin-top: 8px;
   font-size: 12px;
   color: var(--muted);
+}
+
+.dl-progress-stage {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--blue);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* 导出可切换动画多选：选中的标签改成圆润渐变淡色药丸 */

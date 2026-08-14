@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
+import queue
 import shutil
 import subprocess
 import sys
@@ -34,6 +36,24 @@ cdn = registry.get("sources", "cdn")
 if config.get("proxy"):
     cdn.proxy = config.get("proxy") or None
 logger = setup_logging()
+
+# ---- 下载阶段事件推送（SSE）：前端右下角卡片实时显示 下载/合成/同步 等阶段 ----
+_EVENT_QUEUES: list[queue.Queue] = []
+_EVENT_LOCK = threading.Lock()
+
+
+def _broadcast(name: str, data: dict) -> None:
+    payload = f"event: {name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+    with _EVENT_LOCK:
+        for q in _EVENT_QUEUES:
+            try:
+                q.put_nowait(payload)
+            except queue.Full:
+                pass
+
+
+def _emit_stage(stage: str, **extra) -> None:
+    _broadcast("stage", {"stage": stage, **extra})
 
 _META_MTIMES: dict[str, float] = {}
 # 批量下载取消：前端带 download_id 发起下载，点取消时置位对应 Event，
@@ -108,11 +128,17 @@ def set_config(patch: dict) -> dict:
 
 
 def resolve_skin(ship: str, bundle: str, name: str | None = None) -> dict | None:
-    for s in metadata.skins():
-        if s.get("ship") == ship and s.get("bundle") == bundle:
-            if name is None or s.get("name") == name:
-                return s
-    return None
+    hits = [s for s in metadata.skins() if s.get("ship") == ship and s.get("bundle") == bundle]
+    if not hits:
+        return None
+    if name is None:
+        return hits[0]
+    for s in hits:
+        if s.get("name") == name:
+            return s
+    # 名字对不上（占位名/旧名）：仅当 ship+bundle 唯一候选时容忍，
+    # 避免 DOA 联动等“同 key 多皮肤”误配。
+    return hits[0] if len(hits) == 1 else None
 
 
 def downloaded_with_painting() -> list[dict]:
@@ -161,6 +187,19 @@ def delete_skin_files(ship: str, bundle: str, name: str | None = None) -> dict:
     run_tool("build_local_index", timeout=120)
     metadata.reload()
     refresh_library()
+    # 语音联动：该船已无其他已下载皮肤时，删除其语音（转换产物 + cue 包）
+    try:
+        from core import voice as voice_mod
+        ship_id = voice_mod.ship_id_for((skin or {}).get("painting", ""))
+        if ship_id:
+            still = [
+                s for s in downloaded_with_painting()
+                if s.get("ship") == ship and s.get("painting") != (skin or {}).get("painting")
+            ]
+            if not still:
+                removed.extend(voice_mod.remove_voice(ship_id))
+    except Exception:  # noqa: BLE001
+        pass
     return {"ok": True, "removed": removed}
 
 
@@ -281,11 +320,18 @@ def run_wiki_sync() -> dict:
 
 
 def local_skin_asset(ship: str, bundle: str, name: str | None = None) -> dict | None:
-    for loc in metadata.local_skins():
-        if loc.get("ship") == ship and loc.get("bundle") == bundle:
-            if name is None or loc.get("name") == name:
-                return loc.get("asset")
-    return None
+    hits = [
+        loc for loc in metadata.local_skins()
+        if loc.get("ship") == ship and loc.get("bundle") == bundle
+    ]
+    if not hits:
+        return None
+    if name is None:
+        return hits[0].get("asset")
+    for loc in hits:
+        if loc.get("name") == name:
+            return loc.get("asset")
+    return hits[0].get("asset") if len(hits) == 1 else None
 
 
 ALIGN_MAP = {
@@ -477,6 +523,7 @@ def download_skin(skin: dict, cancel_event: threading.Event | None = None) -> di
         painting = painting.lower()
         if cancel_event is not None and cancel_event.is_set():
             return cancelled()
+        _emit_stage("正在下载立绘", detail=painting)
         if stype == "static":
             csv = cdn.fetch_hash_csv(info.cdn, info.raw_strings["paintinghash"])
             wanted = {f"painting/{painting}", f"painting/{painting}_tex"}
@@ -503,6 +550,7 @@ def download_skin(skin: dict, cancel_event: threading.Event | None = None) -> di
 
         for path, size, md5 in targets:
             dest = bundles_dir / path
+            _emit_stage("正在下载", detail=path)
             ok = cdn.download_asset(info.cdn, md5, dest, size, cancel_event=cancel_event)
             downloaded.append({"path": path, "ok": ok})
 
@@ -511,6 +559,7 @@ def download_skin(skin: dict, cancel_event: threading.Event | None = None) -> di
 
         # 提取
         if stype == "spine":
+            _emit_stage("正在提取 Spine 骨架", detail=painting)
             res_bundle = bundles_dir / "spinepainting" / f"{painting}_res"
             main_bundle = bundles_dir / "spinepainting" / painting
             # 大多数皮肤资源在 _res 包里；2B/A2 等新皮肤没有 _res，资源直接在主包里
@@ -520,6 +569,7 @@ def download_skin(skin: dict, cancel_event: threading.Event | None = None) -> di
                     str(src), str(extracted_dir / "spine" / painting)
                 )
         elif stype == "live2d":
+            _emit_stage("正在提取 Live2D 模型", detail=painting)
             bundle = bundles_dir / "live2d" / painting
             if bundle.exists():
                 registry.get("extractors", "live2d").extract(
@@ -531,21 +581,36 @@ def download_skin(skin: dict, cancel_event: threading.Event | None = None) -> di
             # 确保 dependencies 依赖包存在，并下载该立绘的依赖 tex。
             # 并发下载时多个线程会同时抢写 dependencies / 依赖 tex，必须整体串行化。
             with _DEPS_LOCK:
-                if not (bundles_dir / "dependencies").exists():
-                    try:
-                        az = cdn.fetch_hash_csv(info.cdn, info.raw_strings["azhash"])
-                        row = next(
-                            (r for r in (l.split(",") for l in az.splitlines() if l.strip())
-                             if len(r) >= 3 and r[0] == "dependencies"),
-                            None,
+                # dependencies 依赖包会随新皮肤更新，必须按 md5 校验：
+                # 本地缺失或与服务器版本不一致时重新下载，否则新皮肤在依赖表里找不到
+                # 自己的贴图清单，azur-paint 会 KeyError 并静默降级成简单拼接（立绘错位）。
+                dep_path = bundles_dir / "dependencies"
+                try:
+                    az = cdn.fetch_hash_csv(info.cdn, info.raw_strings["azhash"])
+                    row = next(
+                        (r for r in (l.split(",") for l in az.splitlines() if l.strip())
+                         if len(r) >= 3 and r[0] == "dependencies"),
+                        None,
+                    )
+                    if row:
+                        dep_md5 = row[2]
+                        stale = (
+                            not dep_path.exists()
+                            or hashlib.md5(dep_path.read_bytes()).hexdigest() != dep_md5
                         )
-                        if row:
+                        if stale:
+                            logger.info(
+                                "dependencies 依赖包已更新（%s -> %s），重新下载",
+                                hashlib.md5(dep_path.read_bytes()).hexdigest()[:8] if dep_path.exists() else "缺失",
+                                dep_md5[:8],
+                            )
                             cdn.download_asset(
-                                info.cdn, row[2], bundles_dir / "dependencies",
+                                info.cdn, dep_md5, dep_path,
                                 int(row[1]), cancel_event=cancel_event,
                             )
-                    except Exception as e:  # noqa: BLE001
-                        print("[static] dependencies 下载失败:", e)
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("dependencies 刷新失败")
+                    print("[static] dependencies 刷新失败:", e)
                 # 下载该立绘的全部依赖 tex 包（多层立绘需要）
                 try:
                     from plugins.extractors.static import get_dependencies
@@ -574,6 +639,7 @@ def download_skin(skin: dict, cancel_event: threading.Event | None = None) -> di
             # 贴图可能命名为 {painting}_tex 或 {painting}_1_tex/_2_tex（多贴图皮肤），
             # 只要 prefab 存在即可尝试提取，不能用固定的 _tex 存在性作为门槛。
             if prefab.exists():
+                _emit_stage("正在合成静态立绘", detail=painting)
                 tex_use = next(
                     (t for t in [tex, *sorted(bundles_dir.glob(f"painting/{painting}_*_tex"))] if t.exists()),
                     tex,
@@ -592,7 +658,22 @@ def download_skin(skin: dict, cancel_event: threading.Event | None = None) -> di
     if cancel_event is not None and cancel_event.is_set():
         return cancelled()
 
+    # 语音联动：设置开启时同步下载该船互动语音（失败不阻塞皮肤下载结果）
+    if config.get("voice_download"):
+        try:
+            from core import voice as voice_mod
+            ship_id = voice_mod.ship_id_for(skin.get("painting", ""))
+            if ship_id:
+                _emit_stage("正在下载语音", detail=f"船 {ship_id}")
+                voice_mod.download_voice(
+                    ship_id, info=info, cancel_event=cancel_event,
+                    emit=lambda s, d="": _emit_stage(s, detail=d),
+                )
+        except Exception as e:  # noqa: BLE001
+            print(f"[voice] 语音下载失败: {e}")
+
     # 重建本地索引并刷新资源库
+    _emit_stage("正在同步本地索引")
     with _INDEX_LOCK:
         run_tool("build_local_index", timeout=120)
         metadata.reload()
@@ -612,7 +693,97 @@ def download_skin(skin: dict, cancel_event: threading.Event | None = None) -> di
     return result
 
 
+def voice_status(painting: str) -> dict:
+    """查询某皮肤对应船的语音状态：shipId、是否已下载、cue 列表。
+
+    pick 按换装序号取该皮肤专属语音（{base}_{N}），L2D 互动 _ex1100 兜底，
+    避免「同一角色不同皮肤播同一句」。
+    """
+    try:
+        from core import voice as voice_mod
+        ship_id = voice_mod.ship_id_for(painting)
+        if not ship_id:
+            return {"ok": True, "shipId": None, "has": False, "cues": []}
+        cues = voice_mod.voice_cues(ship_id)
+        return {
+            "ok": True,
+            "shipId": ship_id,
+            "has": bool(cues),
+            "cues": cues,
+            "pick": {
+                b: voice_mod.pick_cue(ship_id, b, painting=painting)
+                for b in ("touch_head", "touch_1", "touch_2", "login", "home")
+            },
+            "words": voice_mod.words_for(painting),
+        }
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)[:120], "has": False, "cues": []}
+
+
+def voice_backfill() -> dict:
+    """为已下载的 Live2D 皮肤补下语音（按船去重，缺哪个下哪个）。"""
+    from core import voice as voice_mod
+    try:
+        downloaded = downloaded_with_painting()
+    except Exception:  # noqa: BLE001
+        downloaded = []
+    ship_ids: list[int] = []
+    seen: set[int] = set()
+    for s in downloaded:
+        if s.get("type") != "live2d":
+            continue
+        gid = voice_mod.ship_id_for(s.get("painting", ""))
+        if gid and gid not in seen:
+            seen.add(gid)
+            ship_ids.append(gid)
+    if not ship_ids:
+        return {"ok": True, "downloaded": 0, "skipped": 0, "ships": []}
+    info = cdn.handshake("CN")
+    ok_ships, skipped = [], 0
+    total = len(ship_ids)
+    for i, gid in enumerate(ship_ids, 1):
+        if voice_mod.voice_cues(gid):
+            skipped += 1
+            continue
+        _emit_stage("正在下载语音", detail=f"船 {gid}", progress=f"{i}/{total}")
+        if voice_mod.download_voice(gid, info=info, emit=lambda s, d="": _emit_stage(s, detail=d)):
+            ok_ships.append(gid)
+    return {"ok": True, "downloaded": len(ok_ships), "skipped": skipped, "ships": ok_ships}
+
+
+def open_wallpapers_dir() -> dict:
+    """打开软件自己的壁纸输出目录（resources/wallpapers，存放导出的待用壁纸项目）。"""
+    d = ROOT / "resources" / "wallpapers"
+    d.mkdir(parents=True, exist_ok=True)
+    os.startfile(str(d))  # noqa: S606
+    return {"ok": True, "path": str(d)}
+
+
+def clean_exports() -> dict:
+    """清理导出的壁纸项目与截图（resources/wallpapers + resources/exports）。"""
+    removed = []
+    for sub in ("wallpapers", "exports"):
+        d = ROOT / "resources" / sub
+        if d.is_dir():
+            for child in d.iterdir():
+                if child.is_dir():
+                    shutil.rmtree(child, ignore_errors=True)
+                else:
+                    child.unlink(missing_ok=True)
+                removed.append(str(child))
+    return {"ok": True, "removed": len(removed)}
+
+
 class Handler(BaseHTTPRequestHandler):
+    def _query(self, key: str, default: str = "") -> str:
+        """解析查询串 ?key=value。"""
+        qs = self.path.split("?", 1)[1] if "?" in self.path else ""
+        for part in qs.split("&"):
+            k, _, v = part.partition("=")
+            if k == key:
+                return v
+        return default
+
     def _send(self, status: int, payload: dict) -> None:
         # 诊断日志：记录前端每次 API 调用的请求与响应（真实窗口排障用）
         try:
@@ -632,6 +803,35 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _stream_events(self) -> None:
+        """SSE 长连接：把下载/提取/同步等阶段事件推送给前端。"""
+        q: queue.Queue = queue.Queue(maxsize=200)
+        with _EVENT_LOCK:
+            _EVENT_QUEUES.append(q)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(b"event: connected\ndata: {}\n\n")
+            self.wfile.flush()
+            while True:
+                try:
+                    msg = q.get(timeout=30)
+                    self.wfile.write(msg.encode("utf-8"))
+                    self.wfile.flush()
+                except queue.Empty:
+                    self.wfile.write(b": ping\n\n")  # 心跳保活
+                    self.wfile.flush()
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            with _EVENT_LOCK:
+                if q in _EVENT_QUEUES:
+                    _EVENT_QUEUES.remove(q)
 
     def _is_local_request(self) -> bool:
         """只允许本机页面调用后端：Host 必须为本机地址，且 Origin（浏览器跨站请求必带）
@@ -664,9 +864,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             ensure_fresh_metadata()
+            if self.path.startswith("/api/events"):
+                self._stream_events()
+                return
             if self.path.startswith("/api/health"):            self._send(200, {"ok": True, "plugins": registry.summary()})
             elif self.path.startswith("/api/library/downloaded"):
                 self._send(200, {"ok": True, "skins": downloaded_with_painting()})
+            elif self.path.startswith("/api/voice/status"):
+                self._send(200, voice_status(self._query("painting", "")))
             elif self.path.startswith("/api/config"):
                 self._send(200, get_config())
             else:
@@ -724,6 +929,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, run_wiki_sync())
             elif self.path.startswith("/api/config"):
                 self._send(200, set_config(data.get("config") or {}))
+            elif self.path.startswith("/api/voice/backfill"):
+                self._send(200, voice_backfill())
+            elif self.path.startswith("/api/log"):
+                # 前端运行时错误上报（排障用）：打印到 stdout，不落盘
+                print(f"[fe-error] {json.dumps(data, ensure_ascii=False)[:800]}", flush=True)
+                self._send(200, {"ok": True})
             elif self.path.startswith("/api/export-image-data"):
                 self._send(
                     200,
@@ -789,6 +1000,10 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path.startswith("/api/open/extracted-dir"):
                 os.startfile(str(ROOT / "resources" / "extracted"))  # noqa: S606
                 self._send(200, {"ok": True})
+            elif self.path.startswith("/api/open/wallpapers-dir"):
+                self._send(200, open_wallpapers_dir())
+            elif self.path.startswith("/api/library/clean-exports"):
+                self._send(200, clean_exports())
             else:
                 self._send(404, {"ok": False, "error": "not found"})
         except Exception as e:  # noqa: BLE001

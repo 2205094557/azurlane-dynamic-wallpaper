@@ -14,8 +14,10 @@ const API_ACTIONS = {
   cancelDownload: { path: '/api/download/cancel', method: 'POST' },
   deleteSkin: { path: '/api/library/delete', method: 'POST' },
   clearDownloads: { path: '/api/library/clear', method: 'POST' },
+  cleanExports: { path: '/api/library/clean-exports', method: 'POST' },
   openDownloadDir: { path: '/api/open/download-dir', method: 'POST' },
   openExtractedDir: { path: '/api/open/extracted-dir', method: 'POST' },
+  openWallpapersDir: { path: '/api/open/wallpapers-dir', method: 'POST' },
   listDownloaded: { path: '/api/library/downloaded', method: 'GET' },
   updateMetadata: { path: '/api/metadata/update', method: 'POST' },
   syncWiki: { path: '/api/metadata/sync-wiki', method: 'POST' },
@@ -26,6 +28,8 @@ const API_ACTIONS = {
   getPalette: { path: '/api/palette', method: 'POST' },
   getConfig: { path: '/api/config', method: 'GET' },
   setConfig: { path: '/api/config', method: 'POST' },
+  voiceStatus: { path: '/api/voice/status', method: 'GET' },
+  voiceBackfill: { path: '/api/voice/backfill', method: 'POST' },
 }
 
 // pywebview 侧的方法名（Python snake_case）
@@ -71,8 +75,16 @@ function bodyFor(name, args) {
 async function callBackend(name, args) {
   const cfg = API_ACTIONS[name]
   const opts = { method: cfg.method, headers: { 'Content-Type': 'application/json' } }
-  if (cfg.method === 'POST') opts.body = JSON.stringify(bodyFor(name, args))
-  const resp = await fetch(`${API_BASE}${cfg.path}`, opts)
+  let url = `${API_BASE}${cfg.path}`
+  if (cfg.method === 'POST') {
+    opts.body = JSON.stringify(bodyFor(name, args))
+  } else if (name === 'voiceStatus') {
+    url += `?painting=${encodeURIComponent((args[0] || ''))}`
+  }
+  const resp = await fetch(url, opts)
+  // 先检查 HTTP 状态再解析 JSON：后端返回错误页/空 body 时 json() 会抛
+  // 解析异常，被上层误报成“后端服务未启动”，误导排障
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
   return resp.json()
 }
 
@@ -88,6 +100,9 @@ export const assetUrl = (rel) =>
       ? `/@fs/${DEV_RESOURCES}/${rel}`
       : `resources/${rel}`
     : `resources/${rel}`
+
+// 下载阶段事件流（SSE）：下载立绘/合成/同步索引等实时状态
+export const sseUrl = () => `${API_BASE}/api/events`
 
 async function call(name, ...args) {
   const mod = await import('../mock/api.js')
@@ -112,7 +127,9 @@ async function call(name, ...args) {
       if (['downloadSkin', 'deleteSkin', 'clearDownloads', 'updateMetadata', 'syncWiki'].includes(name)) mod.invalidateCache()
       return result
     } catch (e) {
-      return { ok: false, error: `后端服务未启动（${API_BASE}）：${e.message}` }
+      // HTTP 状态错误（接口 500/404 等）与连接失败（服务未启动）区分开
+      const isHttp = e.message && e.message.startsWith('HTTP ')
+      return { ok: false, error: isHttp ? `后端接口错误：${e.message}` : `后端服务未启动（${API_BASE}）：${e.message}` }
     }
   }
   return mod[name](...args)
@@ -130,10 +147,14 @@ export const bridge = {
   cancelDownload: (id) => call('cancelDownload', id),
   exportImageData: (ship, bundle, name, dataUrl, index) => call('exportImageData', ship, bundle, name, dataUrl, index),
   listDownloaded: () => call('listDownloaded'),
+  voiceStatus: (painting) => call('voiceStatus', painting),
+  voiceBackfill: () => call('voiceBackfill'),
   deleteSkin: (ship, bundle, name) => call('deleteSkin', ship, bundle, name),
   clearDownloads: () => call('clearDownloads'),
+  cleanExports: () => call('cleanExports'),
   openDownloadDir: () => call('openDownloadDir'),
   openExtractedDir: () => call('openExtractedDir'),
+  openWallpapersDir: () => call('openWallpapersDir'),
   updateMetadata: () => call('updateMetadata'),
   syncWiki: () => call('syncWiki'),
   getConfig: () => call('getConfig'),

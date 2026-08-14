@@ -50,8 +50,25 @@ def collect_layers(pd: Path, all_parts: list[str]) -> list[dict]:
         atlas = pd / (stem + ".atlas")
         if atlas.exists():
             layers.append({"skel": sk.name, "atlas": atlas.name})
-    # 背景骨架排最前（先渲染），其余保持字典序
-    layers.sort(key=lambda l: (0 if l["skel"].lower().endswith("_bg.skel") else 1, l["skel"]))
+    # 独立背景图（*BG*.png，无对应 skel）：部分皮肤（如 伦敦-高效工作时间、
+    # 虎笨-高校运动会）背景是单独的静态大图而非骨架层，作为背景层排最前。
+    # 仅当背景图没有被任何 skel 的 atlas 引用时，才作为独立背景层。
+    atlas_texts = ""
+    for l in layers:
+        if l.get("atlas"):
+            try:
+                atlas_texts += (pd / l["atlas"]).read_text(encoding="utf-8", errors="ignore")
+            except Exception:  # noqa: BLE001
+                pass
+    for bg in sorted(pd.glob("*BG*.png")) + sorted(pd.glob("*bg*.png")):
+        if bg.name not in atlas_texts:
+            layers.append({"bg": bg.name})
+    # 背景骨架/背景图排最前（先渲染），其余保持字典序
+    def sort_key(l):
+        if l.get("bg"):
+            return (0, l["bg"])
+        return (0 if l["skel"].lower().endswith("_bg.skel") else 1, l["skel"])
+    layers.sort(key=sort_key)
     return layers
 
 
@@ -63,6 +80,35 @@ def live2d_asset(painting: str):
     if not m3:
         return None
     return {"dir": "extracted/" + m3.parent.relative_to(EXTRACTED).as_posix(), "model": m3.name}
+
+
+def build_pinyin_index(skins: list[dict]) -> None:
+    """生成拼音检索索引 pinyin.json（舰船名 + 皮肤名 → 全拼/首字母）。"""
+    try:
+        from pypinyin import lazy_pinyin
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        ships = json.loads((MD / "ships.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        ships = []
+
+    def pinyin_of(s: str) -> dict:
+        parts = lazy_pinyin(s or "", errors="ignore")
+        p = "".join(ch for ch in "".join(parts).lower() if ch.isalnum())
+        i = "".join(ch[0] for ch in parts if ch).lower()
+        return {"p": p, "i": i}
+
+    ships_map = {s.get("name", ""): pinyin_of(s.get("name", "")) for s in ships if s.get("name")}
+    skins_map: dict[str, dict] = {}
+    for sk in skins:
+        n = sk.get("name", "")
+        if n and n not in skins_map:
+            skins_map[n] = pinyin_of(n)
+    (MD / "pinyin.json").write_text(
+        json.dumps({"ships": ships_map, "skins": skins_map}, ensure_ascii=False, indent=1),
+        encoding="utf-8",
+    )
 
 
 def main():
@@ -105,8 +151,9 @@ def main():
             seen = set()
             for p in present_sorted:
                 for layer in collect_layers(spine_dir / p, parts_of(info)):
-                    if layer["skel"] not in seen:
-                        seen.add(layer["skel"])
+                    lkey = layer.get("bg") or layer["skel"]
+                    if lkey not in seen:
+                        seen.add(lkey)
                         layers.append(layer)
             if layers:
                 local.append({
@@ -153,6 +200,7 @@ def main():
 
     local.sort(key=lambda x: (x["ship"], x["bundle"]))
     (MD / "local_skins.json").write_text(json.dumps(local, ensure_ascii=False, indent=2), encoding="utf-8")
+    build_pinyin_index(skins)
     print("local_skins:", len(local))
     for l in local:
         print(" ", l["ship"], "|", l["bundle"], "|", l["name"], "|", l["type"], "|", l["asset"]["dir"])

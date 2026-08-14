@@ -22,14 +22,17 @@ async function loadAll() {
   // 下载/提取后 local_skins.json 会更新，若不禁用缓存会读到旧文件，
   // 导致"下载完但界面仍显示未下载、预览不出来"。统一 no-store。
   const noCache = { cache: 'no-store' }
-  const [ships, skins, local] = await Promise.all([
+  const [ships, skins, local, pinyinData] = await Promise.all([
     (await fetch(metadataUrl('ships.json'), noCache)).json(),
     (await fetch(metadataUrl('skins.json'), noCache)).json(),
     (await fetch(metadataUrl('local_skins.json'), noCache)).json(),
+    (await fetch(metadataUrl('pinyin.json'), noCache)).json().catch(() => ({})),
   ])
+  const pyShips = (pinyinData && pinyinData.ships) || {}
+  const pySkins = (pinyinData && pinyinData.skins) || {}
   const byShip = {}
   for (const s of ships) {
-    byShip[s.name] = { ...s, id: s.name, gradient: gradientFrom(s.name), skins: [] }
+    byShip[s.name] = { ...s, id: s.name, gradient: gradientFrom(s.name), py: pyShips[s.name] || null, skins: [] }
   }
   const localByPainting = {}
   for (const l of local) {
@@ -47,7 +50,9 @@ async function loadAll() {
       ship: sk.ship,
       bundle: sk.bundle,
       name: sk.name,
+      painting: sk.painting || '',
       theme: sk.theme || '',
+      py: pySkins[sk.name] || null,
       type: loc ? loc.type : sk.type || 'unknown',
       status: loc ? 'downloaded' : 'remote',
       asset: loc ? loc.asset : null,

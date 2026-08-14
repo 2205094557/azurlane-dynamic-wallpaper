@@ -56,10 +56,13 @@
                 :offset-x="offsetX"
                 :offset-y="offsetY"
                 :alignment="alignment"
+                :interaction-mode="interactionMode"
+                :show-hit-areas="showHitAreas"
                 @animations="onSpineAnims"
                 @error="onEngineError"
                 @scale-change="scale = $event"
                 @pan-change="offsetX = $event.x; offsetY = $event.y"
+                @subtitle="l2dSubtitle = $event"
               />
               <div v-else class="preview-placeholder">
                 <div class="preview-halo"></div>
@@ -116,6 +119,25 @@
 
             <div class="panel-title">缩放</div>
             <n-slider v-model:value="scale" :min="20" :max="300" :step="5" />
+
+            <div v-if="currentSkin.type === 'live2d'" class="panel-title">交互模式</div>
+            <div v-if="currentSkin.type === 'live2d'" class="mode-toggle">
+              <span class="mode-pill" :class="{ active: !interactionMode }" @click="interactionMode = false">拖拽</span>
+              <span class="mode-pill" :class="{ active: interactionMode }" @click="interactionMode = true">互动</span>
+              <span class="mode-pill" :class="{ active: voiceEnabled }" :title="voiceEnabled ? '关闭互动语音与台词' : '开启互动语音与台词'" @click="toggleVoice">
+                {{ voiceEnabled ? '🔊 语音' : '🔇 语音' }}
+              </span>
+            </div>
+            <div v-if="currentSkin.type === 'live2d'" class="l2d-subtitle-box" :class="{ empty: !l2dSubtitle }">
+              {{ l2dSubtitle || '点击角色互动，台词显示在这里' }}
+            </div>
+            <div v-if="currentSkin.type === 'live2d'" class="mode-toggle" style="margin-top: 6px">
+              <span
+                class="mode-pill"
+                :class="{ active: showHitAreas }"
+                @click="showHitAreas = !showHitAreas"
+              >显示交互区域</span>
+            </div>
 
             <div class="panel-title">多骨架分层</div>
             <n-checkbox v-model:checked="layersVisible">显示 _T / _B / _M 分层</n-checkbox>
@@ -209,6 +231,7 @@ import {
   NDrawer, NDrawerContent, NAlert,
 } from 'naive-ui'
 import { bridge } from '../../bridge'
+import { voiceEnabled, toggleVoice } from '../../utils/voice'
 import SpinePreview from '../../components/SpinePreview.vue'
 import Live2DPreview from '../../components/Live2DPreview.vue'
 
@@ -237,6 +260,9 @@ const offsetX = ref(0)
 const offsetY = ref(0)
 const alignment = ref('center')
 const layersVisible = ref(true)
+const interactionMode = ref(false)
+const l2dSubtitle = ref('')
+const showHitAreas = ref(false)
 const stageWrapRef = ref(null)
 const stageRef = ref(null)
 let stageRO = null
@@ -270,6 +296,12 @@ const bgOptions = [
 ]
 
 const currentSkin = computed(() => ship.value?.skins[currentIndex.value] || null)
+// 切换皮肤时清空右侧面板台词，避免残留上一个皮肤的语音文本
+//（watch 注册时会立即求值一次 getter，必须放在 currentSkin 定义之后）
+watch(
+  () => currentSkin.value && currentSkin.value.key,
+  () => { l2dSubtitle.value = '' },
+)
 
 const bgCss = ref('')
 const solidColor = ref('')
@@ -514,6 +546,26 @@ async function doApply() {
   gap: 10px;
 }
 
+/* 右侧控制面板台词文本框 */
+.l2d-subtitle-box {
+  max-height: 120px;
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #fff;
+  background: rgba(10, 14, 24, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  text-align: center;
+}
+
+.l2d-subtitle-box.empty {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 12px;
+}
+
 .anim-nav {
   display: flex;
   align-items: center;
@@ -526,6 +578,33 @@ async function doApply() {
   font-size: 12px;
   min-width: 52px;
   text-align: center;
+}
+
+.mode-toggle {
+  display: flex;
+  gap: 6px;
+  background: rgba(74, 111, 165, 0.1);
+  border-radius: 999px;
+  padding: 3px;
+}
+
+.mode-pill {
+  flex: 1;
+  text-align: center;
+  font-size: 12px;
+  line-height: 26px;
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.25s ease;
+}
+
+.mode-pill.active {
+  background: linear-gradient(135deg, rgba(74, 111, 165, 0.92), rgba(133, 205, 202, 0.85));
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(74, 111, 165, 0.35);
+  font-weight: 500;
 }
 
 .panel-title {

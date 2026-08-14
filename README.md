@@ -4,13 +4,15 @@
 
 ## 功能特性
 
-- **Spine 动态立绘**（`spinepainting`，支持 `_T` 人物 / `_B` 背景 / `_M` 舰装等多骨架分层合并）
+- **Spine 动态立绘**（`spinepainting`，支持 `_T` 人物 / `_B` 背景 / `_M` 舰装等多骨架分层合并，自动选附件最多的完整 skin）
 - **Live2D 皮肤**（`live2d`，Cubism 3）
 - **静态立绘**（`painting` 碎片重组，基于 azur-paint 合成完整立绘）
 - 官方 CDN 抓取 + AssetBundle 本地解包提取（TCP 握手协议，参考开源实现）
 - 本地导入已解包资源
 - 图鉴式 Web 预览（Spine / Live2D 双引擎，背景样式含取色、莫奈、毛玻璃、星空等）
-- 导出 Wallpaper Engine 壁纸项目（含 project.json 原生属性与一键应用）
+- **互动语音**：官方 CriWare cue 语音包下载 + vgmstream 本地解码，点击角色播放台词与语音
+- 导出 Wallpaper Engine 壁纸项目（含 project.json 原生属性、一键应用；L2D 壁纸右侧面板可随时切换**语音 / 开场动画 / 互动**三个开关）
+- **四套主题**：水彩画风（默认）/ 少女漫画风 / 赛博朋克 / 太阳朋克，设置里一键切换
 
 ## 技术栈
 
@@ -27,10 +29,10 @@ azurlane-dynamic-wallpaper/
 ├── app.py                   # 应用装配（插件注册 + 元数据 + 资源库）
 ├── app_pack.py              # 打包版入口（内置后端 + 静态前端 + pywebview）
 ├── web_main.py              # 源码版桌面入口（加载 Vite dev server）
-├── core/                    # 服务层：注册表 / 元数据 / 资源库 / 取色 / WE 集成
+├── core/                    # 服务层：注册表 / 元数据 / 资源库 / 取色 / 语音 / WE 集成
 ├── plugins/                 # sources / extractors / exporters 插件
 ├── templates/               # 导出壁纸模板 + 共享布局模块 wallpaper-layout.js
-├── tools/                   # 元数据同步、索引重建、打包验收等脚本
+├── tools/                   # 元数据同步、索引重建、语音词表、打包验收等脚本
 ├── frontend/                # Vue 3 + Vite SPA
 ├── scripts/start_dev.py     # 一键启动脚本（关闭窗口后自动清理进程）
 ├── start_dev.bat            # 双击启动源码版
@@ -64,6 +66,11 @@ start_dev.bat
 ```
 
 首次使用请在「设置」里运行**更新元数据**（联网抓取官方 CDN 清单与 bwiki 图鉴数据），之后即可在图鉴中下载、预览皮肤。
+
+## 语音（可选）
+
+- 语音解码依赖 [vgmstream](https://github.com/vgmstream/vgmstream)：把 `vgmstream-cli.exe` 及同目录 DLL 放到 `tools/vgmstream/`（本机工具，不入库）；缺失时语音功能降级为仅显示台词文本
+- 首次使用：在「设置」→ 语音中下载对应舰船语音包（官方 CriWare cue，本地解码为 wav），之后预览点击角色即可播放
 
 ## 打包发布
 
@@ -101,4 +108,4 @@ Live2D 完整转换与静态立绘合成依赖以下第三方实现，仓库未�
 ## 致谢
 
 - [nobbyfix/AzurLane-AssetDownloader](https://github.com/nobbyfix/AzurLane-AssetDownloader) — CDN 协议参考
-- UnityPy / spine-ts / pixi-live2d-display / azur-paint 等开源项目
+- UnityPy / spine-ts / pixi-live2d-display / azur-paint / vgmstream 等开源项目

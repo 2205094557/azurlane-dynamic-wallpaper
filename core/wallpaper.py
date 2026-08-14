@@ -96,6 +96,10 @@ def project_json(
     alignment: int = 0,
     animations: list[str] | None = None,
     animation: str = "",
+    l2d: bool = False,
+    voice: bool = True,
+    intro: bool = True,
+    interact: bool = True,
 ) -> dict:
     # 语义与预览一致：scale 为百分比（100 = 自适应），偏移为画布宽/高百分比
     scale_ctl = int(_clamp(scale, 20, 300))
@@ -113,6 +117,16 @@ def project_json(
             "max": hi,
             "editable": True,
             "fraction": False,
+            "index": index,
+            "order": order,
+        }
+
+    def bool_ctl(text: str, value: bool, order: int, index: int) -> dict:
+        return {
+            "text": text,
+            "type": "bool",
+            "value": bool(value),
+            "editable": True,
             "index": index,
             "order": order,
         }
@@ -143,6 +157,13 @@ def project_json(
             "index": 4,
             "order": 104,
         }
+
+    # Live2D 专属面板开关：语音（互动语音开/关）、开场动画（login 播一次再回 idle）、
+    # 互动（点击/拖拽等交互是否生效）
+    if l2d:
+        properties["voice"] = bool_ctl("语音", voice, 105, 5)
+        properties["playintro"] = bool_ctl("开场动画", intro, 106, 6)
+        properties["interact"] = bool_ctl("互动", interact, 107, 7)
 
     return {
         "file": "index.html",

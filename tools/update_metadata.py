@@ -191,13 +191,16 @@ def main() -> int:
             wiki_names = wiki_skin_names(ship)
         except Exception as e:  # noqa: BLE001
             review.append({"ship": ship, "paintings": names, "reason": f"bwiki 抓取失败: {e}"})
+            # wiki 不可用：先用立绘代码占位，后续图鉴同步会自动补中文名
+            for painting in names:
+                added.append({"ship": ship, "name": painting, "painting": painting, "pending": True})
             continue
         existing = {s["name"] for s in skins if s["ship"] == ship}
         existing_norm = {norm_name(n) for n in existing}
         fresh_names = [n for n in wiki_names if norm_name(n) not in existing_norm]
         if len(fresh_names) == len(names):
             for painting, name in zip(names, fresh_names):
-                added.append({"ship": ship, "name": name, "painting": painting})
+                added.append({"ship": ship, "name": name, "painting": painting, "pending": False})
         else:
             review.append({
                 "ship": ship,
@@ -205,10 +208,14 @@ def main() -> int:
                 "bwiki_new_names": fresh_names,
                 "reason": f"数量不匹配（CDN {len(names)} vs bwiki 新增 {len(fresh_names)}）",
             })
+            # wiki 还没收录这些新皮肤：先用立绘代码占位，保证软件里能下载，
+            # 等 wiki 更新后跑“仅同步图鉴数据”会自动替换成中文名。
+            for painting in names:
+                added.append({"ship": ship, "name": painting, "painting": painting, "pending": True})
 
     print(f"\n自动匹配 {len(added)} 个新皮肤：")
     for a in added:
-        print(f"  + {a['ship']}｜{a['name']}｜{a['painting']}")
+        print(f"  + {a['ship']}｜{a['name']}｜{a['painting']}" + ("（待命名占位）" if a.get("pending") else ""))
     print(f"\n待人工确认 {len(review)} 项：")
     for r in review:
         print("  ?", r)

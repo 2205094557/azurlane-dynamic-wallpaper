@@ -14,10 +14,12 @@ from pathlib import Path
 import UnityPy
 from PIL import Image
 
+from core.applog import setup_logging
 from core.locks import named_lock
 from core.registry import ExtractorPlugin
 
 UnityPy.config.FALLBACK_UNITY_VERSION = "2022.3.62f3"
+logger = setup_logging()
 
 
 def _root_dir() -> Path:
@@ -60,6 +62,7 @@ def _run_azur_paint(painting: str, bundles: Path, out_name: str, dest: Path) -> 
                     shutil.copy2(src, dest)
                     return True
         except Exception as e:  # noqa: BLE001
+            logger.exception("azur-paint 引擎失败: %s", painting)
             print(f"[static] azur-paint 引擎失败: {e}")
         finally:
             sys.argv = old_argv
@@ -173,8 +176,10 @@ class StaticExtractor(ExtractorPlugin):
         if AZP_MAIN2.exists() and (bundles / "dependencies").exists():
             try:
                 if _run_azur_paint(painting, bundles, "painting_tmp", out / "painting.png"):
+                    logger.info("static extract %s -> azur-paint 合成成功", painting)
                     return {"image": "painting.png", "size": list(Image.open(out / "painting.png").size), "mode": "azur-paint"}
             except Exception as e:  # noqa: BLE001
+                logger.exception("static extract %s azur-paint 异常", painting)
                 print(f"[static] azur-paint 引擎失败: {e}")
 
         # 兜底：单网格单纹理
@@ -182,9 +187,11 @@ class StaticExtractor(ExtractorPlugin):
         if mesh and texture:
             canvas = _stitch_simple(mesh, texture)
             if canvas is not None:
+                logger.warning("static extract %s 降级为 simple 拼接（azur-paint 不可用）", painting)
                 canvas.save(out / "painting.png")
                 return {"image": "painting.png", "size": list(canvas.size), "mode": "simple"}
         if texture:
+            logger.warning("static extract %s 降级为 direct 贴图（无网格）", painting)
             texture.image.save(out / "painting.png")
             return {"image": "painting.png", "size": list(texture.image.size), "mode": "direct"}
         raise RuntimeError("未找到可用的网格或贴图")

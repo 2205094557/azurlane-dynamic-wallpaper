@@ -55,6 +55,9 @@ hiddenimports = (
         "core.we_integration",
         "core.events",
         "core.wallpaper",
+        # 语音模块为模块级 body 内延迟 import（backend_server / wallpaper_live2d），
+        # 静态分析可能漏抓，必须显式登记，否则打包版语音功能 ImportError
+        "core.voice",
         "plugins.sources.cdn",
         "plugins.sources.cdn_proto.p10min_pb_pb2",
         "plugins.sources.local",

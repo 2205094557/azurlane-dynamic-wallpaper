@@ -10,6 +10,7 @@ DEFAULTS = {
     "concurrency": 4,
     "download_dir": "resources/bundles",
     "extract_dir": "resources/extracted",
+    "voice_download": True,
 }
 
 
