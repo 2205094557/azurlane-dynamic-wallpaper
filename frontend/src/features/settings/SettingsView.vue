@@ -96,15 +96,24 @@
       <n-card title="语音" size="small" class="wc-card">
         <div class="field">
           <n-checkbox v-model:checked="voiceDownload">
-            下载角色/皮肤语音（下载皮肤时同步下载该船互动语音）
+            下载 Live2D 皮肤语音（仅 L2D 皮肤，下载时同步下载该船互动语音）
           </n-checkbox>
-          <span class="dim">语音来自官方 CDN，按船下载；互动点击（点头/身/特、登录、待机）会播放对应台词。未下载语音的皮肤互动保持静音。</span>
+          <span class="dim">语音来自官方 CDN，按船下载；互动点击（点头/身/特、登录、待机）会播放对应台词。Spine / 静态立绘不下载语音，避免额外耗时。</span>
         </div>
         <div class="row">
           <n-button size="small" secondary :loading="voiceBackfilling" @click="doVoiceBackfill">
             为已下载皮肤补下语音
           </n-button>
           <span class="dim">已下载的 Live2D 皮肤可一键补下其所在船的语音</span>
+        </div>
+        <div class="row">
+          <n-button size="small" :loading="voiceCleaning" @click="doVoiceClean(false)">
+            清理语音
+          </n-button>
+          <n-button size="small" quaternary type="error" :loading="voiceCleaning" @click="doVoiceClean(true)">
+            全部删除
+          </n-button>
+          <span class="dim">清理：删除「没有已下载 L2D 皮肤」的船的语音；全部删除：清空所有语音（需确认）</span>
         </div>
         <div v-if="voiceDlStage" class="voice-dl-stage">{{ voiceDlStage }}</div>
       </n-card>
@@ -311,7 +320,7 @@ const soundTimbre = ref(getSoundPrefs().timbre)
 const soundVolume = ref(getSoundPrefs().volume)
 const voiceDownload = ref(false)
 const voiceBackfilling = ref(false)
-
+const voiceCleaning = ref(false)
 const pluginGroups = [
   { title: '资源来源', items: [{ id: 'cdn', name: '官方 CDN' }, { id: 'local', name: '本地导入' }] },
   { title: '提取器', items: [{ id: 'spine', name: 'Spine 提取' }, { id: 'live2d', name: 'Live2D 提取' }, { id: 'static', name: '静态立绘提取' }] },
@@ -409,6 +418,24 @@ async function doVoiceBackfill() {
     if (voiceDlStage.value) {
       setTimeout(() => { voiceDlStage.value = '' }, 3000)
     }
+  }
+}
+
+// 清理语音：默认只清「没有已下载 L2D 皮肤」的船的语音；all=true 全部删除（需确认）
+async function doVoiceClean(all) {
+  if (all && !window.confirm('确定删除全部已下载语音吗？此操作不可恢复。')) return
+  voiceCleaning.value = true
+  try {
+    const res = await bridge.voiceClean(all)
+    if (res && res.ok) {
+      message.success(`语音清理完成：删除 ${res.removed_ships} 艘船的语音（${res.removed_files} 个文件）`)
+    } else {
+      message.error(`语音清理失败：${(res && res.error) || '未知错误'}`)
+    }
+  } catch (e) {
+    message.error(`语音清理失败：${e.message || e}`)
+  } finally {
+    voiceCleaning.value = false
   }
 }
 

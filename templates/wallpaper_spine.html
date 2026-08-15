@@ -34,6 +34,36 @@ var pendingAnim = null; // WE 属性推送可能早于动画就绪，先暂存�
 
 function showError(msg) { console.error(msg); document.title = "ERR " + msg; }
 
+// 选附件最多的 skin：默认优先，同数时保持 default；遍历计数（不含透明插槽与位置标记）。
+// 与预览 SpinePreview.vue 的 bestSkin 完全一致——部分皮肤（足尖弓矢、交错的温柔时光等）
+// 的 default skin 只有残缺部件（如只有脚/上半身），必须选完整 skin，否则导出后缺身体。
+function bestSkin(data) {
+  var skins = data.skins || [];
+  if (skins.length <= 1) return data.defaultSkin || skins[0];
+  var best = data.defaultSkin || skins[0];
+  var bestCount = -1;
+  for (var si = 0; si < skins.length; si++) {
+    var sk = skins[si];
+    var count = 0;
+    var skel = new spine.Skeleton(data);
+    skel.setSkin(sk);
+    skel.setSlotsToSetupPose();
+    skel.updateWorldTransform();
+    for (var s2 = 0; s2 < skel.slots.length; s2++) {
+      var slot = skel.slots[s2], att = slot.getAttachment();
+      if (!att) continue;
+      if (slot.color && slot.color.a < 0.01) continue;
+      if ((att.name || '').toLowerCase().indexOf('kkkkk') === 0) continue;
+      count++;
+    }
+    if (count > bestCount) {
+      bestCount = count;
+      best = sk;
+    }
+  }
+  return best;
+}
+
 function loadLayer(idx) {
   var cfg = LAYERS[idx];
   var texMap = {};
@@ -52,7 +82,7 @@ function loadLayer(idx) {
       for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
       var data = new spine.SkeletonBinary(loader).readSkeletonData(bytes);
       var skeleton = new spine.Skeleton(data);
-      skeleton.setSkin(data.defaultSkin || data.skins[0]);
+      skeleton.setSkin(bestSkin(data));
       skeleton.setSlotsToSetupPose();
       skeleton.updateWorldTransform();
       var state = new spine.AnimationState(new spine.AnimationStateData(data));
@@ -98,6 +128,50 @@ function animNameFromValue(v) {
   return null;
 }
 
+function isBgLayer(l) {
+  // 背景层识别：skel 名去掉 .skel 后以 B/BG/_B/bg/_bg（可带数字）结尾
+  if (!l || !l.skeleton || !l.name) return false;
+  return /b(?:g)?\d*$/i.test(l.name.replace(/\.skel$/i, ''));
+}
+
+function renderOrder() {
+  // 背景层永远先画：layers 顺序来自文件名排序，不保证 B 在前
+  var bg = skeletons.filter(isBgLayer);
+  var rest = skeletons.filter(function (l) { return !isBgLayer(l); });
+  return bg.concat(rest);
+}
+
+function applyCharacterFit() {
+  // 场景型皮肤“人物适配”：人物骨架明显大于背景层时（月下起舞 2 倍、秘密特训 1.5 倍），
+  // 等比缩小到背景高度 70%，使其不超过背景、保持合适比例（与官方海报一致）。
+  // 只缩不放；人物高度 ≤ 背景 1.15 倍时保持原样。中心锚点 x = cx*(1-s)。
+  var bgLayers = skeletons.filter(isBgLayer);
+  if (!bgLayers.length) return;
+  var bgFrame = layerBounds(bgLayers[0]);
+  if (!isFinite(bgFrame.minX)) return;
+  var charLayers = skeletons.filter(function (l) { return !isBgLayer(l); });
+  if (!charLayers.length) return;
+  var per = charLayers.map(layerBounds).filter(function (b) { return isFinite(b.minX); });
+  if (!per.length) return;
+  var cMinX = Math.min.apply(null, per.map(function (b) { return b.minX; }));
+  var cMaxX = Math.max.apply(null, per.map(function (b) { return b.maxX; }));
+  var cMinY = Math.min.apply(null, per.map(function (b) { return b.minY; }));
+  var cMaxY = Math.max.apply(null, per.map(function (b) { return b.maxY; }));
+  var bgH = bgFrame.maxY - bgFrame.minY;
+  var charH = cMaxY - cMinY;
+  if (!bgH || !charH || charH <= bgH * 1.15) return;
+  var s = (bgH * 0.7) / charH;
+  var cx = (cMinX + cMaxX) / 2, cy = (cMinY + cMaxY) / 2;
+  for (var i = 0; i < charLayers.length; i++) {
+    var sk = charLayers[i].skeleton;
+    sk.x = cx * (1 - s);
+    sk.y = cy * (1 - s);
+    sk.scaleX = s;
+    sk.scaleY = s;
+    sk.updateWorldTransform();
+  }
+}
+
 function buildScene() {
   skeletons = [];
   for (var i = 0; i < pending.length; i++) if (pending[i]) skeletons.push(pending[i]);
@@ -108,6 +182,8 @@ function buildScene() {
     l.state.apply(l.skeleton);
     l.skeleton.updateWorldTransform();
   });
+  // 风景型皮肤：人物远大于背景时等比缩小到背景内（如 月下起舞）
+  applyCharacterFit();
   computeBounds();
   applyLayout();
   lastFrame = performance.now() / 1000;
@@ -208,12 +284,128 @@ function contentFrame() {
   return { minX: fminX - padX, maxX: fmaxX + padX, minY: fminY - padY, maxY: fmaxY + padY };
 }
 
+function denseAreaFrame() {
+  // 面积过滤取景：保留面积 ≤ 最大附件 40% 的部件（跨所有层），滤掉超大背景/云朵。
+  // 返回 null 表示不适用（内容未被撑爆），调用方回退常规逻辑。
+  var raw = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+  var items = [];
+  skeletons.forEach(function (l) {
+    for (var i = 0; i < l.skeleton.slots.length; i++) {
+      var slot = l.skeleton.slots[i], att = slot.getAttachment();
+      if (!att) continue;
+      if (slot.color && slot.color.a < 0.01) continue;
+      if ((att.name || '').toLowerCase().indexOf('kkkkk') === 0) continue;
+      var isRegion = att instanceof spine.RegionAttachment;
+      var isMesh = att instanceof spine.MeshAttachment;
+      if (!isRegion && !isMesh) continue;
+      var len = isRegion ? 8 : att.worldVerticesLength;
+      if (!len) continue;
+      var verts = spine.Utils.newFloatArray(len);
+      if (isRegion) att.computeWorldVertices(slot.bone, verts, 0, 2);
+      else att.computeWorldVertices(slot, 0, len, verts, 0, 2);
+      var b = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+      for (var j = 0; j < len; j += 2) {
+        if (verts[j] < b.minX) b.minX = verts[j];
+        if (verts[j] > b.maxX) b.maxX = verts[j];
+        if (verts[j + 1] < b.minY) b.minY = verts[j + 1];
+        if (verts[j + 1] > b.maxY) b.maxY = verts[j + 1];
+      }
+      items.push(b);
+      if (b.minX < raw.minX) raw.minX = b.minX;
+      if (b.maxX > raw.maxX) raw.maxX = b.maxX;
+      if (b.minY < raw.minY) raw.minY = b.minY;
+      if (b.maxY > raw.maxY) raw.maxY = b.maxY;
+    }
+  });
+  if (!items.length) return null;
+  var rawW = raw.maxX - raw.minX, rawH = raw.maxY - raw.minY;
+  var areas = items.map(function (b) { return (b.maxX - b.minX) * (b.maxY - b.minY); });
+  var maxA = Math.max.apply(null, areas);
+  // 最大附件本身就占满画面（无超大背景）时不适用
+  if (maxA >= rawW * rawH * 0.8) return null;
+  var keep = items.filter(function (b, i) { return areas[i] <= maxA * 0.4; });
+  if (!keep.length) return null;
+  // 在过滤后的集合上再做一次网格密度裁剪：滤掉散落的浪花/骷髅/云朵等
+  // 分散装饰（如 DEAD MASTER·战士的小憩），把取景收到角色主体。
+  var N = 64;
+  var gw = rawW / N || 1, gh = rawH / N || 1;
+  var grid = new Float64Array(N * N);
+  for (var k = 0; k < keep.length; k++) {
+    var bb = keep[k];
+    var cx = (bb.minX + bb.maxX) / 2, cy = (bb.minY + bb.maxY) / 2;
+    var gx = Math.min(N - 1, Math.max(0, Math.floor((cx - raw.minX) / gw)));
+    var gy = Math.min(N - 1, Math.max(0, Math.floor((cy - raw.minY) / gh)));
+    grid[gy * N + gx] += Math.max(1, (bb.maxX - bb.minX) * (bb.maxY - bb.minY));
+  }
+  var maxCell = 0;
+  for (var v = 0; v < grid.length; v++) if (grid[v] > maxCell) maxCell = grid[v];
+  if (!maxCell) return null;
+  var threshold = maxCell * 0.02;
+  var fminX = raw.maxX, fmaxX = raw.minX, fminY = raw.maxY, fmaxY = raw.minY, keptCells = 0;
+  for (var gy2 = 0; gy2 < N; gy2++) {
+    for (var gx2 = 0; gx2 < N; gx2++) {
+      if (grid[gy2 * N + gx2] >= threshold) {
+        keptCells++;
+        if (raw.minX + gx2 * gw < fminX) fminX = raw.minX + gx2 * gw;
+        if (raw.minX + (gx2 + 1) * gw > fmaxX) fmaxX = raw.minX + (gx2 + 1) * gw;
+        if (raw.minY + gy2 * gh < fminY) fminY = raw.minY + gy2 * gh;
+        if (raw.minY + (gy2 + 1) * gh > fmaxY) fmaxY = raw.minY + (gy2 + 1) * gh;
+      }
+    }
+  }
+  var fW = fmaxX - fminX, fH = fmaxY - fminY;
+  // 网格保留太少（内容过于稀疏）或过滤后仍占满 90%+：回退原逻辑
+  if (!keptCells || fW >= rawW * 0.9 || fH >= rawH * 0.9) return null;
+  var padX = fW * 0.12, padY = fH * 0.12;
+  return { minX: fminX - padX, maxX: fmaxX + padX, minY: fminY - padY, maxY: fmaxY + padY };
+}
+
 function computeBounds() {
-  // 多部件皮肤（角色+背景）中，背景层面积远大于主体层；取景只按主体层算，
-  // 背景/特效层照常渲染但不参与取景，避免角色被巨大的背景“挤”出视野。
+  // 与预览 SpinePreview.vue 完全一致的取景链：
+  // 背景层基准（有 B/_B/bg/_bg 后缀时）→ contentFrame（网格密度）
+  // → denseAreaFrame（面积过滤）→ 逐层兜底。
+  // 缺第二道时，背景被云朵/大面积装饰撑爆的皮肤（战士的小憩等）会取到巨大
+  // 包围盒，导出后角色明显偏小——这就是“预览合适、壁纸偏小”的根因。
   if (boundsCache) return boundsCache;
+  // 有显式背景层时以背景层为取景基准（背景定义整幅场景）；
+  // 护栏：背景面积超过主体层 8 倍时视为装饰性大背景，回退常规取景。
+  var bgLayers = skeletons.filter(isBgLayer);
+  if (bgLayers.length) {
+    var bgFrame = layerBounds(bgLayers[0]);
+    var nonBg = [];
+    skeletons.forEach(function (l) {
+      if (!isBgLayer(l)) {
+        var b = layerBounds(l);
+        if (isFinite(b.minX)) nonBg.push(b);
+      }
+    });
+    if (isFinite(bgFrame.minX) && nonBg.length) {
+      var bgArea = (bgFrame.maxX - bgFrame.minX) * (bgFrame.maxY - bgFrame.minY) || 1;
+      var maxOther = Math.max.apply(null, nonBg.map(function (b) {
+        return (b.maxX - b.minX) * (b.maxY - b.minY);
+      }));
+      // 护栏：背景面积在主体层的 [0.15, 8] 倍之间才适用背景取景。
+      // 过小（装饰性小背景）会把人物撑爆裁切；过大（云朵类大背景）会重新
+      // 把角色挤小，两种情况都回退常规取景。
+      var bgW = bgFrame.maxX - bgFrame.minX;
+      var bgH = bgFrame.maxY - bgFrame.minY;
+      // 背景必须横构图（宽≥高）：竖构图背景（如 华甲_2 的窄背板）是装饰
+      // 性布景，按它取景会裁掉人物并留大片黑边。
+      if (bgArea >= maxOther * 0.15 && bgArea <= maxOther * 8 && bgW >= bgH) {
+        var padX = (bgFrame.maxX - bgFrame.minX) * 0.08;
+        var padY = (bgFrame.maxY - bgFrame.minY) * 0.08;
+        boundsCache = {
+          minX: bgFrame.minX - padX, maxX: bgFrame.maxX + padX,
+          minY: bgFrame.minY - padY, maxY: bgFrame.maxY + padY,
+        };
+        return boundsCache;
+      }
+    }
+  }
   var dense = contentFrame();
   if (dense) { boundsCache = dense; return boundsCache; }
+  var areaFrame = denseAreaFrame();
+  if (areaFrame) { boundsCache = areaFrame; return boundsCache; }
   var per = [];
   skeletons.forEach(function (l) {
     l.skeleton.updateWorldTransform();
@@ -270,7 +462,7 @@ function render() {
   gl.clearColor(0, 0, 0, 0);
   gl.clear(gl.COLOR_BUFFER_BIT);
   renderer.begin();
-  skeletons.forEach(function (l) { renderer.drawSkeleton(l.skeleton, true); });
+  renderOrder().forEach(function (l) { renderer.drawSkeleton(l.skeleton, true); });
   renderer.end();
   requestAnimationFrame(render);
 }

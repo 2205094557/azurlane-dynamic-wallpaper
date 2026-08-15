@@ -71,7 +71,12 @@ body.theme-solarpunk .wc-btn.gradient {
 }
 body.theme-solarpunk .wc-btn.primary:hover:not(:disabled),
 body.theme-solarpunk .wc-btn.gradient:hover:not(:disabled) {
+  background: linear-gradient(to right, #5fe08f, #1fc48b);
   box-shadow: 0 12px 36px rgba(16, 185, 129, 0.45);
+}
+body.theme-solarpunk .wc-btn.primary:active:not(:disabled),
+body.theme-solarpunk .wc-btn.gradient:active:not(:disabled) {
+  background: linear-gradient(to right, #3ecf78, #0fa572);
 }
 body.theme-solarpunk .wc-btn.gold {
   background: linear-gradient(to right, #fbbf24, #f59e0b);

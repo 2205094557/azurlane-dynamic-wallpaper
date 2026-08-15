@@ -30,6 +30,7 @@ const API_ACTIONS = {
   setConfig: { path: '/api/config', method: 'POST' },
   voiceStatus: { path: '/api/voice/status', method: 'GET' },
   voiceBackfill: { path: '/api/voice/backfill', method: 'POST' },
+  voiceClean: { path: '/api/voice/clean', method: 'POST' },
 }
 
 // pywebview 侧的方法名（Python snake_case）
@@ -68,6 +69,10 @@ function bodyFor(name, args) {
   if (name === 'setConfig') {
     const [cfg] = args
     return { config: cfg || {} }
+  }
+  if (name === 'voiceClean') {
+    const [all] = args
+    return { all: !!all }
   }
   return {}
 }
@@ -149,6 +154,7 @@ export const bridge = {
   listDownloaded: () => call('listDownloaded'),
   voiceStatus: (painting) => call('voiceStatus', painting),
   voiceBackfill: () => call('voiceBackfill'),
+  voiceClean: (all = false) => call('voiceClean', all),
   deleteSkin: (ship, bundle, name) => call('deleteSkin', ship, bundle, name),
   clearDownloads: () => call('clearDownloads'),
   cleanExports: () => call('cleanExports'),

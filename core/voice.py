@@ -104,6 +104,29 @@ def voice_dir(ship_id: int) -> Path:
     return VOICE_DIR / str(ship_id)
 
 
+def voice_ship_ids() -> list[int]:
+    """本地已下载语音的 shipId 列表。"""
+    if not VOICE_DIR.is_dir():
+        return []
+    return [int(d.name) for d in VOICE_DIR.iterdir() if d.is_dir() and d.name.isdigit()]
+
+
+def clean_voice(keep_ids: set[int] | None = None) -> dict:
+    """清理已下载语音（转换产物 + cue 包）。
+
+    keep_ids：需要保留的 shipId 集合；None 表示全部删除。
+    返回 {"removed_ships": n, "removed_files": n}。
+    """
+    removed_ships = 0
+    removed_files = 0
+    for sid in voice_ship_ids():
+        if keep_ids is not None and sid in keep_ids:
+            continue
+        removed_files += len(remove_voice(sid))
+        removed_ships += 1
+    return {"removed_ships": removed_ships, "removed_files": removed_files}
+
+
 def cue_file(ship_id: int, cue: str) -> Path:
     return voice_dir(ship_id) / f"{cue}.wav"
 
@@ -236,6 +259,9 @@ def _vgmstream(args: list[str]) -> str:
         [str(VGMSTREAM_CLI), *args],
         capture_output=True, text=True, env=env, timeout=600,
         creationflags=creationflags,
+        # 语音元数据（cue 名等）可能是非 GBK 编码（日文/Shift-JIS），
+        # 系统默认 GBK 解码会 UnicodeDecodeError 崩掉请求线程
+        encoding="utf-8", errors="replace",
     )
     return r.stdout or r.stderr
 

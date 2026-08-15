@@ -75,7 +75,7 @@ async function loadLayer(cfg) {
   skeleton.setSlotsToSetupPose()
   skeleton.updateWorldTransform()
   const state = new spine.AnimationState(new spine.AnimationStateData(data))
-  return { skeleton, state, data }
+  return { skeleton, state, data, name: cfg.skel }
 }
 
 // 选附件最多的 skin：默认优先，同数时保持 default；遍历计数（不含透明插槽与位置标记）
@@ -237,6 +237,41 @@ function computeBounds() {
   // 边界只算一次并缓存：动画帧里的超大特效部件会瞬间撑爆边界，
   // 导致拖拽/缩放时相机拉远出现“全屏虚影”。
   if (boundsCache) return boundsCache
+  // 有显式背景层（B/_B/bg/_bg 后缀）时以背景层为取景基准：
+  // 背景定义整幅场景（月亮/舞台），人物渲染在其中；否则取景会被人物的大
+  // 包围盒带偏（如 新泽西·月下起舞：人物巨大、背景被挤成一条）。
+  // 护栏：背景面积超过主体层 8 倍时视为装饰性大背景，回退常规取景
+  //（避免把云朵类大背景重新撑爆取景）。
+  const bgLayers = layers.filter(isBgLayer)
+  if (bgLayers.length) {
+    const bgFrame = layerBounds(bgLayers[0])
+    const nonBg = layers
+      .filter((l) => l.skeleton && !isBgLayer(l))
+      .map(layerBounds)
+      .filter((b) => Number.isFinite(b.minX))
+    if (Number.isFinite(bgFrame.minX) && nonBg.length) {
+      const bgArea = (bgFrame.maxX - bgFrame.minX) * (bgFrame.maxY - bgFrame.minY) || 1
+      const maxOther = Math.max(...nonBg.map((b) => (b.maxX - b.minX) * (b.maxY - b.minY)))
+      // 护栏：背景面积在主体层的 [0.15, 8] 倍之间才适用背景取景。
+      // 过小（装饰性小背景）会把人物撑爆裁切；过大（云朵类大背景）会重新
+      // 把角色挤小，两种情况都回退常规取景。
+      const bgW = bgFrame.maxX - bgFrame.minX
+      const bgH = bgFrame.maxY - bgFrame.minY
+      // 背景必须横构图（宽≥高）：竖构图背景（如 华甲_2 的窄背板）是装饰
+      // 性布景，按它取景会裁掉人物并留大片黑边。
+      if (bgArea >= maxOther * 0.15 && bgArea <= maxOther * 8 && bgW >= bgH) {
+        const padX = (bgFrame.maxX - bgFrame.minX) * 0.08
+        const padY = (bgFrame.maxY - bgFrame.minY) * 0.08
+        boundsCache = {
+          minX: bgFrame.minX - padX,
+          maxX: bgFrame.maxX + padX,
+          minY: bgFrame.minY - padY,
+          maxY: bgFrame.maxY + padY,
+        }
+        return boundsCache
+      }
+    }
+  }
   const dense = contentFrame()
   if (dense) {
     boundsCache = dense
@@ -375,6 +410,58 @@ function applyLayout() {
   renderer.camera.position.z = 0
 }
 
+function isBgLayer(l) {
+  // 背景层识别：skel 名去掉 .skel 后以 B/BG/_B/bg/_bg（可带数字）结尾，
+  // 如 xinzexi_4B / duyisibao_2B / beikaluolaina_3_bg / bisimaiZB
+  if (!l || !l.skeleton || !l.name) return false
+  const stem = l.name.replace(/\.skel$/i, '')
+  return /b(?:g)?\d*$/i.test(stem)
+}
+
+// 背景层永远先画：碧蓝多层皮肤的 layers 顺序来自文件名排序，不保证 B 在前
+//（如 duyisibao_2 是 [主, B]，按原序画背景会盖住人物）
+function renderOrder() {
+  return [...layers.filter(isBgLayer), ...layers.filter((l) => !isBgLayer(l))]
+}
+
+// 风景/场景型皮肤的“人物适配”：当人物（非背景层）从头到脚明显大于背景层时
+//（如 新泽西·月下起舞 人物是背景 2 倍、多琳妮娅·两人的秘密特训 1.5 倍），
+// 把人物等比缩小到背景高度的 70%，使其“不超过背景大小”并保持合适比例
+//（与官方海报构图一致）。只缩不放；人物高度 ≤ 背景 1.15 倍时保持原样
+//（如 B/M/T 舰装皮肤，人物本就与背景相当）。
+// 锚点用人物包围盒中心：这两个皮肤人物与背景天然垂直居中，中心锚定能让人物
+// 正确落位（月下起舞站树枝、秘密特训跪沙发）。Skeleton 变换 world = local*scale+(x,y)，
+// 以中心 (cx, cy) 为锚点需设 x = cx*(1-s)。
+function applyCharacterFit() {
+  const bgLayers = layers.filter(isBgLayer)
+  if (!bgLayers.length) return
+  const bgFrame = layerBounds(bgLayers[0])
+  if (!Number.isFinite(bgFrame.minX)) return
+  const charLayers = layers.filter((l) => l.skeleton && !isBgLayer(l))
+  if (!charLayers.length) return
+  const per = charLayers.map(layerBounds).filter((b) => Number.isFinite(b.minX))
+  if (!per.length) return
+  const charFrame = {
+    minX: Math.min(...per.map((b) => b.minX)),
+    maxX: Math.max(...per.map((b) => b.maxX)),
+    minY: Math.min(...per.map((b) => b.minY)),
+    maxY: Math.max(...per.map((b) => b.maxY)),
+  }
+  const bgH = bgFrame.maxY - bgFrame.minY
+  const charH = charFrame.maxY - charFrame.minY
+  if (!bgH || !charH || charH <= bgH * 1.15) return
+  const s = (bgH * 0.7) / charH
+  const cx = (charFrame.minX + charFrame.maxX) / 2
+  const cy = (charFrame.minY + charFrame.maxY) / 2
+  for (const l of charLayers) {
+    l.skeleton.x = cx * (1 - s)
+    l.skeleton.y = cy * (1 - s)
+    l.skeleton.scaleX = s
+    l.skeleton.scaleY = s
+    l.skeleton.updateWorldTransform()
+  }
+}
+
 function render() {
   if (disposed || paused) return
   const now = performance.now() / 1000
@@ -402,7 +489,7 @@ function render() {
     if (!l.bg) continue
     drawBg(l.bg)
   }
-  for (const l of layers) {
+  for (const l of renderOrder()) {
     if (!l.skeleton) continue
     renderer.drawSkeleton(l.skeleton, true)
   }
@@ -541,6 +628,9 @@ onMounted(async () => {
       l.state.apply(l.skeleton)
       l.skeleton.updateWorldTransform()
     }
+    // 风景型皮肤：人物远大于背景时等比缩小到背景内（如 月下起舞），
+    // 之后 computeBounds 以背景为取景框即可同时容纳人物与背景
+    applyCharacterFit()
     computeBounds()
     const anims = [...new Set(skelLayers.flatMap((l) => l.data.animations.map((a) => a.name)))]
     emit('animations', anims)

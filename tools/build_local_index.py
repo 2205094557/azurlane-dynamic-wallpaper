@@ -6,6 +6,7 @@
 主部件目录，并合成图层（背景在前、角色在后），让预览/导出作为一个皮肤渲染。
 """
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -35,7 +36,15 @@ def stem_matches(stem: str, part: str) -> bool:
     p = part.lower()
     if low == p or low == p + "_bg":
         return True
-    return any(low == p + t.lower() or low == p + "_" + t.lower() for t in PARTS)
+    for t in PARTS:
+        if low == p + t.lower() or low == p + "_" + t.lower():
+            return True
+    # 容错：个别皮肤骨架文件名与 painting 存在轻微差异（如约克城II原版文件是
+    # yukechengIIB.skel，而 painting 是 yuekechengii——少一个 'e'），
+    # 严格比对会漏收整个皮肤。去掉尾部部件后缀后做「忽略大小写 + 去 'e'」归一化比较。
+    core = re.sub(r"(?:bg)?[tbmf]$", "", low)
+    pcore = re.sub(r"(?:bg)?[tbmf]$", "", p)
+    return core.replace("e", "") == pcore.replace("e", "")
 
 
 def collect_layers(pd: Path, all_parts: list[str]) -> list[dict]:
@@ -63,11 +72,16 @@ def collect_layers(pd: Path, all_parts: list[str]) -> list[dict]:
     for bg in sorted(pd.glob("*BG*.png")) + sorted(pd.glob("*bg*.png")):
         if bg.name not in atlas_texts:
             layers.append({"bg": bg.name})
-    # 背景骨架/背景图排最前（先渲染），其余保持字典序
+    # 背景骨架/背景图排最前（先渲染），其余保持字典序。
+    # 背景层识别：skel 名去掉 .skel 后以 B/BG/_B/bg/_bg（可带数字）结尾
+    #（如 xinzexi_4B / duyisibao_2B / beikaluolaina_3_bg / bisimaiZB），
+    # 否则 duyisibao_2 这种 [主, B] 顺序会把背景画到人物上面。
     def sort_key(l):
         if l.get("bg"):
             return (0, l["bg"])
-        return (0 if l["skel"].lower().endswith("_bg.skel") else 1, l["skel"])
+        stem = l["skel"].lower().removesuffix(".skel")
+        is_bg = bool(re.search(r"b(?:g)?\d*$", stem))
+        return (0 if is_bg else 1, l["skel"])
     layers.sort(key=sort_key)
     return layers
 

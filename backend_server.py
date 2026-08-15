@@ -658,8 +658,9 @@ def download_skin(skin: dict, cancel_event: threading.Event | None = None) -> di
     if cancel_event is not None and cancel_event.is_set():
         return cancelled()
 
-    # 语音联动：设置开启时同步下载该船互动语音（失败不阻塞皮肤下载结果）
-    if config.get("voice_download"):
+    # 语音联动：仅 Live2D 皮肤下载语音（互动语音是 L2D 专属设计；
+    # Spine / 静态立绘不下载，避免额外耗时）。设置关闭时也不下载。
+    if config.get("voice_download") and stype == "live2d":
         try:
             from core import voice as voice_mod
             ship_id = voice_mod.ship_id_for(skin.get("painting", ""))
@@ -718,6 +719,25 @@ def voice_status(painting: str) -> dict:
         }
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)[:120], "has": False, "cues": []}
+
+
+def voice_clean(all_: bool = False) -> dict:
+    """清理已下载语音。默认只清「没有已下载 Live2D 皮肤」的船的语音（L2D 专属设计，
+    Spine/静态已不下载语音，孤儿语音属于浪费）；all=True 时全部删除。"""
+    from core import voice as voice_mod
+    if all_:
+        return {"ok": True, **voice_mod.clean_voice()}
+    try:
+        downloaded = downloaded_with_painting()
+    except Exception:  # noqa: BLE001
+        downloaded = []
+    keep: set[int] = set()
+    for s in downloaded:
+        if s.get("type") == "live2d":
+            gid = voice_mod.ship_id_for(s.get("painting", ""))
+            if gid:
+                keep.add(gid)
+    return {"ok": True, **voice_mod.clean_voice(keep)}
 
 
 def voice_backfill() -> dict:
@@ -931,6 +951,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, set_config(data.get("config") or {}))
             elif self.path.startswith("/api/voice/backfill"):
                 self._send(200, voice_backfill())
+            elif self.path.startswith("/api/voice/clean"):
+                self._send(200, voice_clean(all_=bool(data.get("all"))))
             elif self.path.startswith("/api/log"):
                 # 前端运行时错误上报（排障用）：打印到 stdout，不落盘
                 print(f"[fe-error] {json.dumps(data, ensure_ascii=False)[:800]}", flush=True)

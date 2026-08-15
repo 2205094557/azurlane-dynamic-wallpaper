@@ -64,7 +64,12 @@ body.theme-shoujo .wc-btn.gradient {
 }
 body.theme-shoujo .wc-btn.primary:hover:not(:disabled),
 body.theme-shoujo .wc-btn.gradient:hover:not(:disabled) {
+  background: linear-gradient(135deg, #ffd6df, #ffc2d0);
   box-shadow: 0 8px 30px rgba(255, 183, 197, 0.65);
+}
+body.theme-shoujo .wc-btn.primary:active:not(:disabled),
+body.theme-shoujo .wc-btn.gradient:active:not(:disabled) {
+  background: linear-gradient(135deg, #f8b9c7, #f5a8b9);
 }
 body.theme-shoujo .wc-btn.gold {
   background: linear-gradient(135deg, #fef0b8, #fde68a);
