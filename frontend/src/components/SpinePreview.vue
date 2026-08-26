@@ -449,6 +449,14 @@ function cycleTouchInteract() {
   playVoice(anim)
 }
 
+// 纯表情皮肤点击切表情时：随机播一句该船的触摸/摸头/特殊触摸语音（作点击音效）。
+// 皮肤无 touch 动画，但语音包按船绑定有这些 cue；随机选择让反馈更自然。
+function playVoiceRandomInteractive() {
+  const bases = ['touch_head', 'touch_1', 'touch_2']
+  const pick = bases[Math.floor(Math.random() * bases.length)]
+  playVoice(pick)
+}
+
 function layerBounds(l) {
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
   for (const slot of l.skeleton.slots) {
@@ -1158,10 +1166,10 @@ function onCanvasDown(e) {
       startInteractDrag()
       playVoice('touch_body')
     } else if (animNames().some((n) => isExpression(n, layers.find((l) => l.skeleton)?.data))) {
-      // 无 drag/touch 但有表情：点击循环切全部表情。
-      // 注意：此皮肤无 touch 动画，游戏内点击不触发互动语音（语音按船绑定，
-      // 但无互动动画时点击不发声）——与游戏行为一致，不额外播语音。
+      // 无 drag/touch 但有表情：点击循环切全部表情，
+      // 同时随机播一句该船的触摸/摸头/特殊触摸语音作点击反馈（用户需求）
       cycleExpression()
+      playVoiceRandomInteractive()
     } else {
       cycleTouchInteract()
     }

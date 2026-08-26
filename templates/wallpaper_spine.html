@@ -786,6 +786,23 @@ function spinePlayVoice(actionName) {
   } catch (e) { /* 无语音不影响互动 */ }
 }
 
+// 纯表情皮肤点击切表情时：随机播一句该船的触摸/摸头语音作点击反馈
+function spinePlayVoiceRandom() {
+  if (!VOICE_ON || !VOICE_JSON) return;
+  if (!voiceRuntimeOn) return;
+  var pick = VOICE_JSON.pick || {};
+  var cues = [pick.touch_head, pick.touch_1, pick.touch_2].filter(Boolean);
+  if (!cues.length) return;
+  var cue = cues[Math.floor(Math.random() * cues.length)];
+  try {
+    if (_voiceAudio) { _voiceAudio.pause(); _voiceAudio = null; }
+    var a = new Audio("assets/voice/" + cue + ".wav");
+    a.volume = 0.9;
+    a.play().catch(function () { if (_voiceAudio === a) _voiceAudio = null; });
+    _voiceAudio = a;
+  } catch (e) { /* 无语音不影响互动 */ }
+}
+
 
 // ===== WE 面板开关运行时状态（初始值 = 导出时的选项）=====
 var voiceRuntimeOn = VOICE_ON;   // 互动语音（面板开关实时切换）
@@ -804,9 +821,12 @@ function initInteract() {
     // 互动开关关闭：不触发互动动画/语音
     if (!interactOn) return;
     dragging = true;
-    // 纯表情皮肤（无 drag/touch/login）：点击循环切换全部表情
+    // 纯表情皮肤（无 drag/touch/login）：点击循环切换全部表情 + 随机互动语音
     if (!isInteractiveSkin()) {
-      if (hasExpressions()) cycleExpression();
+      if (hasExpressions()) {
+        cycleExpression();
+        spinePlayVoiceRandom(); // 点击切表情时随机播一句该船触摸/摸头语音
+      }
       return;
     }
     // ★ drag 皮肤：先按点击坐标命中面部表情区（数字 hitArea）→ 切表情；
