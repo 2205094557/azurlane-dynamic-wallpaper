@@ -104,6 +104,14 @@
               title="自定义纯色背景"
             />
 
+            <div class="panel-title">动画</div>
+            <n-select v-model:value="animation" :options="animOptions" :disabled="!animOptions.length" placeholder="无可用动画" />
+            <div v-if="animOptions.length" class="anim-nav">
+              <n-button size="small" quaternary circle @click="stepAnim(-1)">←</n-button>
+              <span class="anim-nav-label">{{ animIndex + 1 }} / {{ animOptions.length }}</span>
+              <n-button size="small" quaternary circle @click="stepAnim(1)">→</n-button>
+            </div>
+
             <div class="panel-title">缩放</div>
             <n-slider v-model:value="scale" :min="20" :max="300" :step="5" />
 
@@ -328,11 +336,27 @@ function onSpineAnims(names) {
   }
 }
 
+const animIndex = computed(() => {
+  const i = animOptions.value.findIndex((o) => o.value === animation.value)
+  return i >= 0 ? i : 0
+})
+
+function stepAnim(dir) {
+  const n = animOptions.value.length
+  if (!n) return
+  const next = (animIndex.value + dir + n) % n
+  animation.value = animOptions.value[next].value
+}
+
 function onKeydown(e) {
   const t = e.target
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
   if (t && t.closest && t.closest('.n-select')) return
   if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+  if (animOptions.value.length) {
+    e.preventDefault()
+    stepAnim(e.key === 'ArrowLeft' ? -1 : 1)
+  }
 }
 
 function onEngineError(msg) {
@@ -396,6 +420,7 @@ async function doExport() {
       offsetX: offsetX.value,
       offsetY: offsetY.value,
       alignment: alignment.value,
+      animation: animation.value,
       // 预览页当前开关状态 → WE 侧默认值（编辑导入会覆盖，但一键应用保留）
       voice: voiceEnabled.value,
       intro: introOn.value,
@@ -424,6 +449,7 @@ async function doApply() {
       offsetX: offsetX.value,
       offsetY: offsetY.value,
       alignment: alignment.value,
+      animation: animation.value,
       // 预览页当前开关状态 → WE 侧默认值（一键应用保留，不会被编辑导入历史值覆盖）
       voice: voiceEnabled.value,
       intro: introOn.value,
