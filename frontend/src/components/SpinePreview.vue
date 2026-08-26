@@ -3,9 +3,9 @@
     <canvas ref="canvasRef" class="spine-canvas"></canvas>
     <!-- 诊断心跳：每帧更新时间/动画/暂停状态。定格时看它还在不在跳：在跳=渲染输出停；不跳=rAF 停 -->
     <div class="spine-dbg" :class="{ hidden: !debugOn }">{{ dbgText }}</div>
-    <!-- 交互区域：互动皮肤 + 互动模式 + 显示交互区域时，按部位画提示框
-         （头=touch_head、身体=touch_body、整体=drag/touch 轮换） -->
-    <template v-if="showHitAreas && interactionMode && hitAreas.length">
+    <!-- 交互区域：复刻 L2D 显示——开启「显示交互区域」即显示全部 hitAreas 区域框，
+         不依赖互动模式（与 L2D l2dHitAreaRects 行为一致）。区域世界框来自参考数据集。 -->
+    <template v-if="showHitAreas && hitAreas.length">
       <div
         v-for="a in hitAreas"
         :key="a.label"
@@ -789,7 +789,8 @@ function boxToScreen(box, cw, ch) {
 }
 
 function updateInteractiveOverlay() {
-  if (!props.showHitAreas || !props.interactionMode) {
+  // 复刻 L2D：开启「显示交互区域」即显示全部 hitAreas 区域框，不要求互动模式。
+  if (!props.showHitAreas) {
     hitAreas.value = []
     return
   }
@@ -806,9 +807,12 @@ function updateInteractiveOverlay() {
       touch_head: '摸头', touch_body: '摸身体', touch_special: '特殊',
       touch_special_2: '特殊②', touch_special_normal: '特殊待机',
       drag: '拖拽', drag_ex: '拖拽②', ex: '互动', login: '开场',
+      // 足尖弓矢等：拖拽区命名 random，换装区 skin_1/skin_2（L2D 也显示真实区域名）
+      random: '拖拽', skin_1: '换装①', skin_2: '换装②',
     }
     let label = labelMap[h.name] || ''
     if (/^\d+$/.test(h.name)) label = '表情' + h.name
+    if (/^skin_/.test(h.name)) label = label || '换装'
     if (!label) label = h.name
     areas.push({ label, kind: h.name, ...boxToScreen(box, cw, ch) })
   }
