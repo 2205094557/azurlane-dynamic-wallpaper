@@ -1158,8 +1158,10 @@ function onCanvasDown(e) {
       startInteractDrag()
       playVoice('touch_body')
     } else if (animNames().some((n) => isExpression(n, layers.find((l) => l.skeleton)?.data))) {
-      // 无 drag/touch 但有表情：点击循环切全部表情
+      // 无 drag/touch 但有表情：点击循环切全部表情，同时播触摸语音作为点击反馈
+      //（纯表情皮肤无 touch 动画，但语音包有 touch_1 等 cue 可作互动声）
       cycleExpression()
+      playVoice('touch_body')
     } else {
       cycleTouchInteract()
     }
