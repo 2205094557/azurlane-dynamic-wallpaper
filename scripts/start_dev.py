@@ -71,10 +71,19 @@ def log(msg: str) -> None:
 
 
 def _shell_json(cmd: list[str]) -> list[dict]:
-    """取进程表（ProcessId/ParentProcessId/CommandLine），失败返回空列表。"""
+    """取进程表（ProcessId/ParentProcessId/CommandLine），失败返回空列表。
+
+    必须显式 utf-8 + errors='replace' 解码：系统默认 GBK 遇到进程表里的非
+    GBK 字节（中文/日文命令行）会 UnicodeDecodeError 崩溃并返回空表，
+    导致 window_alive() 恒为 False、误触发窗口自动重启（连开多个窗口）。
+    命令行匹配只依赖 ASCII 特征，个别字符变 � 不影响判定。
+    """
     for attempt in range(2):
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            r = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30,
+                encoding="utf-8", errors="replace",
+            )
             if r.returncode != 0 or not r.stdout.strip():
                 continue
             data = json.loads(r.stdout)
@@ -89,6 +98,9 @@ def _shell_json(cmd: list[str]) -> list[dict]:
 def all_processes() -> list[dict]:
     ps = [
         "powershell", "-NoProfile", "-NonInteractive", "-Command",
+        # 显式 UTF-8 输出：Windows PowerShell 5.1 重定向默认 GBK，中文命令行会被
+        # 截断/乱码，且 GBK 解码在 subprocess 侧会崩（见 _shell_json 注释）
+        "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
         "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
     ]
     rows = _shell_json(ps)

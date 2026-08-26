@@ -11,6 +11,9 @@ DEFAULTS = {
     "download_dir": "resources/bundles",
     "extract_dir": "resources/extracted",
     "voice_download": True,
+    # 关闭软件时自动清理「已提取完成」皮肤的原始下载包（bundle）。
+    # 下载包只在下载→提取阶段使用，提取产物保留在 resources/extracted，清理不影响预览/导出。
+    "clean_bundles_on_exit": True,
 }
 
 

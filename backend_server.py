@@ -9,6 +9,7 @@ import json
 import hashlib
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -118,12 +119,16 @@ def get_config() -> dict:
 
 
 def set_config(patch: dict) -> dict:
-    """更新配置并立即生效（目前只有代理）。"""
+    """更新配置并立即生效（代理 / 语音下载 / 退出清理开关）。"""
     patch = patch or {}
     if "proxy" in patch:
         proxy = (patch.get("proxy") or "").strip()
         config.set("proxy", proxy)
         cdn.proxy = proxy or None
+    if "voice_download" in patch:
+        config.set("voice_download", bool(patch.get("voice_download")))
+    if "clean_bundles_on_exit" in patch:
+        config.set("clean_bundles_on_exit", bool(patch.get("clean_bundles_on_exit")))
     return {"ok": True, "config": config.data}
 
 
@@ -203,6 +208,68 @@ def delete_skin_files(ship: str, bundle: str, name: str | None = None) -> dict:
     return {"ok": True, "removed": removed}
 
 
+def delete_skins_batch(items: list[dict]) -> dict:
+    """批量删除皮肤：只删文件 + 语音联动检查一次，最后重建一次索引。
+
+    逐个调用 delete_skin_files 时每个皮肤都会触发一次 build_local_index
+    （全量扫描 extracted 目录），全选删除 N 个皮肤就是 N 次全量重建——这是
+    「设置页全选删除很慢」的根源。批量版把索引重建从 O(N) 降到 1 次。
+    """
+    removed: list[str] = []
+    failed: list[dict] = []
+    seen_paintings: set[str] = set()  # 本次删掉的 painting（去重）
+    for it in items or []:
+        try:
+            ship = it.get("ship", "")
+            bundle = it.get("bundle", "")
+            name = it.get("name")
+            skin = resolve_skin(ship, bundle, name)
+            if not skin:
+                failed.append({"ship": ship, "bundle": bundle, "name": name, "error": "皮肤不存在"})
+                continue
+            for p in skin_files(skin):
+                if p.is_dir():
+                    shutil.rmtree(p, ignore_errors=True)
+                elif p.is_file():
+                    p.unlink(missing_ok=True)
+                else:
+                    pass
+                removed.append(str(p))
+            painting = (skin or {}).get("painting", "")
+            if painting:
+                seen_paintings.add(painting.lower())
+        except Exception as e:  # noqa: BLE001
+            failed.append({"ship": it.get("ship"), "error": str(e)})
+
+    # 语音联动：被清空的船删除其语音（转换产物 + cue 包）。
+    # 用「剩余已下载」判断：批量删除后一次性刷新元数据再查，避免逐皮肤重复查询。
+    try:
+        from core import voice as voice_mod
+
+        run_tool("build_local_index", timeout=120)  # 先重建一次索引供下方查询
+        metadata.reload()
+        refresh_library()
+        remaining = {s.get("painting", "").lower() for s in downloaded_with_painting()}
+        for painting in sorted(seen_paintings):
+            if painting in remaining:
+                continue
+            ship_id = voice_mod.ship_id_for(painting)
+            if ship_id:
+                removed.extend(voice_mod.remove_voice(ship_id))
+    except Exception as e:  # noqa: BLE001
+        print(f"[batch-delete] 语音联动失败: {e}")
+        # 兜底：仍要保证索引与内存一致
+        run_tool("build_local_index", timeout=120)
+        metadata.reload()
+        refresh_library()
+    return {
+        "ok": not failed,
+        "removed_count": len(removed),
+        "failed": failed,
+        "failed_count": len(failed),
+    }
+
+
 def clear_all_downloads() -> dict:
     removed = []
     for sub in ("bundles", "extracted"):
@@ -218,6 +285,76 @@ def clear_all_downloads() -> dict:
     metadata.reload()
     refresh_library()
     return {"ok": True, "removed": removed}
+
+
+def _bundle_paths(stype: str, painting: str, depmap: dict | None = None) -> list[Path]:
+    """该皮肤（部件）的原始下载包路径。
+
+    只返回本皮肤自身的 bundle 文件；共享资源（dependencies 包、voice 语音源包）
+    永远不在清理范围里。depmap 可传入一次解析的静态依赖表，避免逐皮肤重复解包。
+    """
+    b = ROOT / "resources" / "bundles"
+    painting = painting.lower()
+    paths: list[Path] = []
+    if stype == "spine":
+        paths += [b / "spinepainting" / painting, b / "spinepainting" / f"{painting}_res"]
+    elif stype == "live2d":
+        paths += [b / "live2d" / painting]
+    else:
+        paths += [b / "painting" / painting, b / "painting" / f"{painting}_tex"]
+        paths += sorted(b.glob(f"painting/{painting}_*_tex"))
+        try:
+            from plugins.extractors.static import get_dependencies
+
+            dep = (depmap if depmap is not None else get_dependencies(str(b / "dependencies")))
+            for d in dep.get(f"painting/{painting}", []):
+                if d.startswith("painting/"):
+                    paths.append(b / d)
+        except Exception:  # noqa: BLE001
+            pass
+    return [p for p in paths if p.exists()]
+
+
+def cleanup_processed_bundles() -> dict:
+    """关闭软件时自动清理「已提取完成」皮肤的原始下载包（bundle）。
+
+    下载包只在 下载→提取 阶段使用；提取产物（resources/extracted）才是
+    预览/导出/应用的数据源，删除下载包不影响任何已提取皮肤。
+    遍历 local_skins.json（提取成功的事实来源，build_local_index 只收录
+    产物存在的皮肤）逐个删除其 bundle；未提取/提取失败的 bundle 不在索引里，
+    自然保留，方便下次重试。同 painting 多类型（如 DOA 联动的 spine+static
+    双条目）按各自 type 分别清理，不会漏。
+    共享资源不删：bundles/dependencies（静态合成依赖包）、bundles/voice（语音源包）。
+    受配置 clean_bundles_on_exit 控制，可在设置页关闭。
+    """
+    if not config.get("clean_bundles_on_exit", True):
+        return {"ok": True, "skipped": True, "removed": [], "kept": 0}
+    removed: list[str] = []
+    depmap: dict | None = None
+    for loc in metadata.local_skins():
+        stype = loc.get("type", "")
+        painting = (loc.get("painting") or "").lower()
+        if not painting or stype not in ("spine", "live2d", "static"):
+            continue
+        if stype == "static" and depmap is None:
+            try:
+                from plugins.extractors.static import get_dependencies
+
+                depmap = get_dependencies(str(ROOT / "resources" / "bundles" / "dependencies"))
+            except Exception:  # noqa: BLE001
+                depmap = {}
+        for p in _bundle_paths(stype, painting, depmap):
+            try:
+                if p.is_dir():
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    p.unlink(missing_ok=True)
+                removed.append(str(p))
+            except Exception as e:  # noqa: BLE001
+                print(f"[cleanup] 删除失败 {p}: {e}")
+    if removed:
+        print(f"[cleanup] 退出清理：删除 {len(removed)} 个已提取皮肤的下载包（保留提取产物）", flush=True)
+    return {"ok": True, "removed": removed, "kept": 0}
 
 
 def _read_json(path: Path, default: dict) -> dict:
@@ -378,6 +515,13 @@ def _export_project(ship: str, bundle: str, name: str | None, options: dict) -> 
                 "alignment": ALIGN_MAP.get(str(opts.get("alignment", "center")), 0),
                 "animation": opts.get("animation", ""),
                 "animations": opts.get("animations") or [],
+                # L2D / Spine 共同的面板开关（前端导出选项透传，预览页勾选的状态同步到 WE 侧默认值）
+                "voice": bool(opts.get("voice", True)),
+                "intro": bool(opts.get("intro", True)),
+                "interact": bool(opts.get("interact", True)),
+                "track": bool(opts.get("track", True)),
+                # Spine 专属：显示交互区域（预览页打开则 WE 默认也打开）
+                "showHitAreas": bool(opts.get("showHitAreas", False)),
             },
             str(ROOT / "resources" / "wallpapers"),
         )
@@ -477,6 +621,37 @@ def export_image_data(
     return {"ok": True, "path": str(dest), "opened": opened, "message": f"图片已导出：{dest.name}"}
 
 
+def _cleanup_stale_exports(keep: str) -> int:
+    """清理 resources/wallpapers 下与本次导出同角色同皮肤的旧项目目录。
+
+    每次「导出并应用」成功后，删除同名壁纸（目录名同前缀 {ship}_{name}_）的
+    旧导出——resources/wallpapers 是待应用的中转区，同壁纸只留最新一份即可；
+    不同名壁纸（其他角色/皮肤）全部保留。keep 为本次项目路径（绝对或相对均可）。
+
+    目录名格式：{ship}_{name}_{uuid8}，前缀 = 去掉末尾 _{uuid8} 的部分。
+    """
+    wp = ROOT / "resources" / "wallpapers"
+    if not wp.is_dir():
+        return 0
+    keep_path = Path(keep).resolve()
+    keep_name = keep_path.name
+    prefix = re.sub(r"_[0-9a-f]{8}$", "", keep_name)
+    removed = 0
+    for child in wp.iterdir():
+        if not child.is_dir():
+            continue
+        if child.resolve() == keep_path:
+            continue
+        # 同角色同皮肤：目录名去掉 _uuid8 后与本次前缀一致；不同名则保留
+        if re.sub(r"_[0-9a-f]{8}$", "", child.name) != prefix:
+            continue
+        shutil.rmtree(child, ignore_errors=True)
+        removed += 1
+    if removed:
+        print(f"[export] 已清理 {removed} 个同皮肤旧导出项目目录", flush=True)
+    return removed
+
+
 def apply_skin(ship: str, bundle: str, name: str | None, options: dict) -> dict:
     """导出并直接应用到 Wallpaper Engine（新副本 + openWallpaper，绕开编辑器导入路径）。"""
     try:
@@ -490,9 +665,12 @@ def apply_skin(ship: str, bundle: str, name: str | None, options: dict) -> dict:
             "project": proj,
             "error": "应用失败：未找到 Wallpaper Engine 安装目录",
         }
+    # 应用成功才清理旧导出（失败时保留旧导出，用户可能手动拖入本次项目）
+    cleaned = _cleanup_stale_exports(proj)
     return {
         "ok": True,
         "project": proj,
+        "cleaned": cleaned,
         "message": "已生成并应用壁纸，可在 Wallpaper Engine 中查看",
     }
 
@@ -658,9 +836,9 @@ def download_skin(skin: dict, cancel_event: threading.Event | None = None) -> di
     if cancel_event is not None and cancel_event.is_set():
         return cancelled()
 
-    # 语音联动：仅 Live2D 皮肤下载语音（互动语音是 L2D 专属设计；
-    # Spine / 静态立绘不下载，避免额外耗时）。设置关闭时也不下载。
-    if config.get("voice_download") and stype == "live2d":
+    # 语音联动：Live2D 与 Spine 皮肤下载语音（两者都有互动，点击/拖拽播放台词）；
+    # 静态立绘无互动不下载。设置关闭时也不下载。
+    if config.get("voice_download") and stype in ("live2d", "spine"):
         try:
             from core import voice as voice_mod
             ship_id = voice_mod.ship_id_for(skin.get("painting", ""))
@@ -741,7 +919,7 @@ def voice_clean(all_: bool = False) -> dict:
 
 
 def voice_backfill() -> dict:
-    """为已下载的 Live2D 皮肤补下语音（按船去重，缺哪个下哪个）。"""
+    """为已下载的 Live2D / Spine 皮肤补下语音（按船去重，缺哪个下哪个）。"""
     from core import voice as voice_mod
     try:
         downloaded = downloaded_with_painting()
@@ -750,7 +928,7 @@ def voice_backfill() -> dict:
     ship_ids: list[int] = []
     seen: set[int] = set()
     for s in downloaded:
-        if s.get("type") != "live2d":
+        if s.get("type") not in ("live2d", "spine"):
             continue
         gid = voice_mod.ship_id_for(s.get("painting", ""))
         if gid and gid not in seen:
@@ -941,6 +1119,15 @@ class Handler(BaseHTTPRequestHandler):
                         data.get("ship"), data.get("bundle"), data.get("name")
                     ),
                 )
+            elif self.path.startswith("/api/library/delete-batch"):
+                # 批量删除：items=[{ship,bundle,name},...]，只重建一次索引（快）
+                items = data.get("items") or []
+                if not isinstance(items, list) or not items:
+                    self._send(400, {"ok": False, "error": "items 为空"})
+                else:
+                    self._send(200, delete_skins_batch(items))
+            elif self.path.startswith("/api/library/cleanup-bundles"):
+                self._send(200, cleanup_processed_bundles())
             elif self.path.startswith("/api/library/clear"):
                 self._send(200, clear_all_downloads())
             elif self.path.startswith("/api/metadata/update"):
@@ -957,6 +1144,21 @@ class Handler(BaseHTTPRequestHandler):
                 # 前端运行时错误上报（排障用）：打印到 stdout，不落盘
                 print(f"[fe-error] {json.dumps(data, ensure_ascii=False)[:800]}", flush=True)
                 self._send(200, {"ok": True})
+            elif self.path.startswith("/api/debug-frame"):
+                # 预览诊断帧：保存 base64 PNG 到 _debug_frames（排障"画面定格"用）
+                import base64 as _b64
+                try:
+                    tag = str(data.get("tag", "frame"))[:40]
+                    payload = data.get("png", "")
+                    if payload.startswith("data:"):
+                        payload = payload.split(",", 1)[1]
+                    d = ROOT / "_debug_frames"
+                    d.mkdir(exist_ok=True)
+                    (d / f"{tag}.png").write_bytes(_b64.b64decode(payload))
+                    self._send(200, {"ok": True, "saved": str(d / f"{tag}.png")})
+                except Exception as e:  # noqa: BLE001
+                    print(f"[debug-frame] 保存失败: {e}")
+                    self._send(200, {"ok": False})
             elif self.path.startswith("/api/export-image-data"):
                 self._send(
                     200,

@@ -24,6 +24,11 @@ var OFFSET_Y = {{OFFSET_Y}};    // 画布高 %
 var ALIGNMENT = "{{ALIGNMENT}}"; // center / left-top / right-top / left-bottom / right-bottom
 var ANIMATION = {{ANIMATION}};  // 导出的初始动画名（空则按 idle/normal 自动选择）
 var ANIM_OPTIONS = {{ANIM_OPTIONS}}; // 可在 WE 下拉切换的动画列表
+var VOICE_JSON = {{VOICE_JSON}}; // 互动语音配置 {dir,pick,mains}；null=无语音
+var VOICE_ON = {{VOICE}};       // 互动语音开关（false=壁纸不播语音）
+var INTRO_ON = {{INTRO}};       // 开场动画开关（false=不播 login 入场直接待机）
+var INTERACT_ON = {{INTERACT}}; // 互动开关（false=点击/拖拽不触发动画反应）
+var HIT_AREAS = {{HIT_AREAS_JSON}}; // 交互区域数据（游戏 prefab 提取的碰撞框）
 
 var canvas = document.getElementById("canvas");
 var gl = null, renderer = null;
@@ -106,13 +111,42 @@ function pickAnim(sd) {
   return idle || names[0] || "";
 }
 
+// 表情类动画判定：碧蓝 spine 的数字动画（1/2/3...）是"表情集"——只含 1 帧
+// AttachmentTimeline（duration=0），在 t=0 切换眼睛/嘴等附件，不是循环动作。
+// 必须叠加到独立 track（track 1）与 track 0 的 normal 动作同时生效；
+// 若 setAnimation(0,...) 替换 track 0 的 normal，骨架会回到无动作状态变静态。
+function isExpression(name, sd) {
+  var a = sd && sd.animations && sd.animations.find(function (x) { return x.name === name; });
+  return !!(a && a.duration <= 0);
+}
+
 function playAnim(name) {
   pendingAnim = name || null;
   if (!skeletons.length) return;
   var shared = name || pickAnim(skeletons[0].data);
   skeletons.forEach(function (l) {
-    var t = shared && l.data.animations.some(function (a) { return a.name === shared; }) ? shared : pickAnim(l.data);
-    if (t) l.state.setAnimation(0, t, true);
+    if (!shared) return;
+    if (!l.data.animations.some(function (a) { return a.name === shared; })) {
+      // 当前层没有该动画/表情：回退默认动作
+      var fb = pickAnim(l.data);
+      if (fb) l.state.setAnimation(0, fb, true);
+      return;
+    }
+    if (isExpression(shared, l.data)) {
+      // 表情：叠加到 track 1，不覆盖 track 0 的动作；播放一次即可（只切附件）。
+      // 关键：若 track 0 当前无动作（例如导出的初始动画本身就是表情），
+      // 必须先播默认动作到 track 0，否则表情叠加在空 track 上 = 静态。
+      var cur = l.state.getCurrent(0);
+      if (!cur) {
+        var def = pickAnim(l.data);
+        if (def) l.state.setAnimation(0, def, true);
+      }
+      l.state.setAnimation(1, shared, false);
+    } else {
+      // 常规动作：替换 track 0，循环播放；同时清掉 track 1 的表情残留
+      l.state.clearTrack(1);
+      l.state.setAnimation(0, shared, true);
+    }
   });
 }
 
@@ -186,6 +220,8 @@ function buildScene() {
   applyCharacterFit();
   computeBounds();
   applyLayout();
+  // 初始化互动（皮肤含 drag 动画时启用）
+  initInteract();
   lastFrame = performance.now() / 1000;
   canvas.classList.add("ready");
   requestAnimationFrame(render);
@@ -449,46 +485,82 @@ function applyLayout() {
 }
 
 function render() {
-  var now = performance.now() / 1000;
-  var delta = Math.min(0.1, now - lastFrame);
-  lastFrame = now;
-  if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
-    canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
-    gl.viewport(0, 0, canvas.width, canvas.height);
-    renderer.camera.setViewport(canvas.width, canvas.height);
-    applyLayout();
+  // 防呆：任何一帧抛错都不能断掉 rAF 链（否则壁纸画面静默定格）。
+  // 某层动画/绘制异常只跳过该层并记录，整帧循环继续。
+  try {
+    var now = performance.now() / 1000;
+    var delta = Math.min(0.1, now - lastFrame);
+    lastFrame = now;
+    if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
+      canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      renderer.camera.setViewport(canvas.width, canvas.height);
+      applyLayout();
+    }
+    skeletons.forEach(function (l) {
+      try {
+        l.state.update(delta);
+        l.state.apply(l.skeleton);
+        l.skeleton.updateWorldTransform();
+      } catch (e) { console.error("[spine] 层动画异常: " + (l.name || "") + " " + (e && e.message)); }
+    });
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    renderer.begin();
+    renderOrder().forEach(function (l) { renderer.drawSkeleton(l.skeleton, true); });
+    renderer.end();
+  } catch (e) {
+    console.error("[spine] 渲染帧异常: " + (e && e.message || e));
   }
-  skeletons.forEach(function (l) { l.state.update(delta); l.state.apply(l.skeleton); l.skeleton.updateWorldTransform(); });
-  gl.clearColor(0, 0, 0, 0);
-  gl.clear(gl.COLOR_BUFFER_BIT);
-  renderer.begin();
-  renderOrder().forEach(function (l) { renderer.drawSkeleton(l.skeleton, true); });
-  renderer.end();
   requestAnimationFrame(render);
 }
 
 // WE 加载时会先推送一次“全部属性”（含 config.json 里按路径存的历史覆盖值）。
 // 该覆盖值可能来自用户在 WE 里手动拖滑块，也可能来自编辑器导入误写；无论哪种，
-// 都不应覆盖导出时调好的版式——壁纸一律以导出值（SCALE/OFFSET/ALIGNMENT）为准。
-// 唯一例外：动画切换，若 WE 里保存过用户选择则恢复它，否则保持导出默认动画。
+// — 版式（SCALE/OFFSET/ALIGNMENT）一律跳过，以导出内联值为准（保证预览=导出一致）；
+// — 用户偏好开关（语音/开场/互动/显示交互区域）首推时采纳并实时切换；
+// — 动画切换：若 WE 里保存过用户选择则恢复它，否则保持导出默认动画。
 var _initialPropsApplied = false;
 window.wallpaperPropertyListener = {
   applyUserProperties: function (properties) {
     try {
       if (!_initialPropsApplied) {
         _initialPropsApplied = true;
+        // 首推：版式跳过（保持 SCALE/OFFSET/ALIGNMENT 导出内联值）；用户偏好采纳 + 动画恢复
+        if (properties.voice) {
+          voiceRuntimeOn = properties.voice.value === true || properties.voice.value === 1;
+          if (!voiceRuntimeOn && _voiceAudio) { _voiceAudio.pause(); _voiceAudio = null; }
+        }
+        if (properties.playintro) INTRO_ON = properties.playintro.value === true || properties.playintro.value === 1;
+        if (properties.interact) interactOn = properties.interact.value === true || properties.interact.value === 1;
         var firstName = properties.animselect ? animNameFromValue(properties.animselect.value) : null;
         if (firstName) playAnim(firstName);
+        if (skeletons.length) applyLayout();
         return;
       }
       if (properties.scalectrl) SCALE = properties.scalectrl.value;
       if (properties.offsetx) OFFSET_X = properties.offsetx.value;
       if (properties.offsety) OFFSET_Y = properties.offsety.value;
-      if (properties.alignment) ALIGNMENT = WallpaperLayout.ALIGN_ORDER[properties.alignment.value] || ALIGNMENT;
+      // WE combo 推送 value：新版为字符串（对齐名），旧版为下标（数字），都兼容
+      if (properties.alignment) {
+        var av = properties.alignment.value;
+        if (typeof av === "number") ALIGNMENT = WallpaperLayout.ALIGN_ORDER[av] || ALIGNMENT;
+        else if (typeof av === "string") ALIGNMENT = av;
+      }
       if (properties.animselect) {
         var animName = animNameFromValue(properties.animselect.value);
         if (animName) playAnim(animName);
       }
+      // ===== WE 面板开关实时切换（与 L2D 一致）=====
+      // 互动语音：关→停当前语音并不再播放
+      if (properties.voice) {
+        voiceRuntimeOn = properties.voice.value === true || properties.voice.value === 1;
+        if (!voiceRuntimeOn && _voiceAudio) { _voiceAudio.pause(); _voiceAudio = null; }
+      }
+      // 开场动画：切回 normal 待机后是否重播 login 由下一次加载决定，运行时不打断
+      if (properties.playintro) INTRO_ON = properties.playintro.value === true || properties.playintro.value === 1;
+      // 互动：关→点击不再触发互动动画
+      if (properties.interact) interactOn = properties.interact.value === true || properties.interact.value === 1;
       if (skeletons.length) applyLayout();
     } catch (e) {}
   }
@@ -497,6 +569,238 @@ window.wallpaperPropertyListener = {
 window.__captureCanvasDataURL = function () {
   try { return canvas.toDataURL("image/png"); } catch (e) { return ""; }
 };
+
+// ===== Spine 互动（drag 系拖拽状态机 + touch 系点击互动）=====
+// drag 系（有 drag/ex 动画）：normal →(拖拽)→ drag →(播完)→ ex 循环 →(再拖)→
+//   drag_ex →(播完)→ normal。
+// touch 系（有 login/touch_* 动画，如 携心夜烛 feiteliedadi_5）：开场 login
+//   播一次回 normal；点击轮换播 touch_body/head/special 一次回 normal。
+var interactState = "normal"; // normal | drag | ex | drag_ex | login
+var interactEnabled = false;
+var dragging = false;
+var TOUCH_ANIMS = ["touch_body", "touch_head", "touch_special"];
+var _touchIndex = -1;
+// 官方互动规则（config_client）：按当前待机(idle)匹配规则 → 播 action 一次 →
+// 切 change_idle 循环。如 携心夜烛：touch_special 播完进 touch_special_normal
+// 特殊待机循环，再点击播 touch_special_2 后回 normal。数据由导出器注入。
+var INTERACT_RULES = {{INTERACT_RULES_JSON}};
+var currentIdle = "normal"; // 当前待机动画（规则匹配键）
+function animNames0() {
+  if (!skeletons.length || !skeletons[0].data) return [];
+  return skeletons[0].data.animations.map(function (a) { return a.name; });
+}
+function hasAnim0(name) {
+  var names = animNames0();
+  return names.indexOf(name) >= 0;
+}
+function isInteractiveSkin() {
+  var names = animNames0();
+  if (names.indexOf("drag") >= 0 && names.indexOf("ex") >= 0) return true;
+  for (var i = 0; i < TOUCH_ANIMS.length; i++) if (names.indexOf(TOUCH_ANIMS[i]) >= 0) return true;
+  return names.indexOf("login") >= 0;
+}
+function playInteractAnim(name, loop) {
+  skeletons.forEach(function (l) {
+    if (!l.data.animations.some(function (a) { return a.name === name; })) return;
+    l.state.clearTrack(1);
+    l.state.setAnimation(0, name, loop);
+  });
+}
+function enterInteract(state) {
+  if (interactState === state) return;
+  interactState = state;
+  switch (state) {
+    case "drag": playInteractAnim("drag", false); break;
+    case "ex": playInteractAnim("ex", true); break;
+    case "drag_ex": playInteractAnim("drag_ex", false); break;
+    case "normal": playInteractAnim("normal", true); break;
+  }
+}
+function onInteractComplete(entry) {
+  if (!entry || entry.trackIndex !== 0) return;
+  if (entry.loop) return; // 循环动画每圈 complete 不处理（ex/normal 由 spine 自动续圈）
+  var name = entry.animation ? entry.animation.name : "";
+  if (interactState === "drag") enterInteract("ex");
+  else if (interactState === "drag_ex") enterInteract("normal");
+  else if (/^touch_|^login$/.test(name)) playInteractAnim(currentIdle, true);
+}
+function startInteractDrag() {
+  if (!interactEnabled) return;
+  if (interactState === "ex" || interactState === "drag_ex") enterInteract("drag_ex");
+  else enterInteract("drag");
+}
+// 皮肤是否有数字表情动画（duration=0 的 AttachmentTimeline 表情集）
+function hasExpressions() {
+  var sd = skeletons.length && skeletons[0].data ? skeletons[0].data : null;
+  if (!sd) return false;
+  for (var k = 0; k < sd.animations.length; k++) {
+    var a = sd.animations[k];
+    if (/^\d+$/.test(a.name) && a.duration <= 0) return true;
+  }
+  return false;
+}
+// 纯表情皮肤：点击循环切换全部数字表情（1→2→…→无表情→1）
+var _exprIndex = -1;
+function cycleExpression() {
+  var sd = skeletons.length && skeletons[0].data ? skeletons[0].data : null;
+  if (!sd) return;
+  var exprs = [];
+  for (var k = 0; k < sd.animations.length; k++) {
+    if (/^\d+$/.test(sd.animations[k].name) && sd.animations[k].duration <= 0) exprs.push(sd.animations[k].name);
+  }
+  if (!exprs.length) return;
+  _exprIndex = (_exprIndex + 1) % (exprs.length + 1); // +1 = 循环回"无表情"
+  skeletons.forEach(function (l) {
+    var cur = l.state.getCurrent(0);
+    if (!cur) {
+      var def = pickAnim(l.data);
+      if (def) l.state.setAnimation(0, def, true);
+    }
+    if (_exprIndex < exprs.length) l.state.setAnimation(1, exprs[_exprIndex], false);
+    else l.state.clearTrack(1);
+  });
+}
+
+// touch 系：点击轮换播 touch 动画（body → head → special），播完自动回 normal
+function cycleTouchInteract() {
+  var names = animNames0();
+  var order = [];
+  for (var i = 0; i < TOUCH_ANIMS.length; i++) if (names.indexOf(TOUCH_ANIMS[i]) >= 0) order.push(TOUCH_ANIMS[i]);
+  if (!order.length) return;
+  _touchIndex = (_touchIndex + 1) % order.length;
+  playInteractAnim(order[_touchIndex], false);
+}
+
+// ===== 官方互动规则状态机 =====
+// 按 hit 名（或当前待机）匹配 config_client 规则 → 播 action 一次 → 切 change_idle
+function findRuleByHit(hitName) {
+  for (var i = 0; i < INTERACT_RULES.length; i++) {
+    var r = INTERACT_RULES[i];
+    if (r && r.hit === hitName && r.action && r.click !== false) return r;
+  }
+  return null;
+}
+function playRuleAction(hitName) {
+  if (!INTERACT_RULES.length) return false;
+  var rule = null;
+  if (hitName) rule = findRuleByHit(hitName);
+  if (!rule) {
+    // 按当前待机匹配；无则用 is_default
+    for (var i = 0; i < INTERACT_RULES.length; i++) {
+      var r = INTERACT_RULES[i];
+      if (r && r.idle === currentIdle && r.click !== false && r.action && hasAnim0(r.action)) { rule = r; break; }
+    }
+    if (!rule) {
+      for (var j = 0; j < INTERACT_RULES.length; j++) {
+        var rd = INTERACT_RULES[j];
+        if (rd && rd.is_default && rd.action && hasAnim0(rd.action)) { rule = rd; break; }
+      }
+    }
+  }
+  if (!rule) return false;
+  var action = rule.action;
+  if (!hasAnim0(action)) return false;
+  currentIdle = rule.change_idle || "normal"; // 动作播完进入的新待机
+  playInteractAnim(action, false);
+  spinePlayVoice(/^touch/.test(action) ? action : null);
+  return true;
+}
+
+// ===== 互动语音（按部位/动作名选对应语音）=====
+// 语音文件由导出器复制到 assets/voice/{cue}.wav，配置在 VOICE_JSON.pick
+var _voiceAudio = null;
+// 动作名 → 语音 pick 键（touch_special → touch_2 特殊、touch_head → 摸头、touch_body/touch_1）
+function voiceCueFor(actionName) {
+  var pick = VOICE_JSON ? (VOICE_JSON.pick || {}) : {};
+  if (/special/.test(actionName)) return pick.touch_2 || pick.touch_1 || pick.touch_head || null;
+  if (/head/.test(actionName)) return pick.touch_head || pick.touch_1 || pick.touch_2 || null;
+  return pick.touch_1 || pick.touch_2 || pick.touch_head || null;
+}
+function spinePlayVoice(actionName) {
+  if (!VOICE_ON || !VOICE_JSON) return;
+  if (!voiceRuntimeOn) return; // WE 面板语音开关关闭
+  var cue = voiceCueFor(actionName || "");
+  if (!cue) return;
+  try {
+    // 防重复：先停掉上一个语音（连续点击不叠加、不重复播放）
+    if (_voiceAudio) { _voiceAudio.pause(); _voiceAudio = null; }
+    var a = new Audio("assets/voice/" + cue + ".wav");
+    a.volume = 0.9;
+    a.play().catch(function () { if (_voiceAudio === a) _voiceAudio = null; });
+    _voiceAudio = a;
+  } catch (e) { /* 无语音不影响互动 */ }
+}
+
+
+// ===== WE 面板开关运行时状态（初始值 = 导出时的选项）=====
+var voiceRuntimeOn = VOICE_ON;   // 互动语音（面板开关实时切换）
+var interactOn = INTERACT_ON;    // 互动（点击/拖拽触发动画反应）
+
+// 初始化互动：mousedown 无条件注册（纯表情皮肤点击切表情、互动皮肤拖拽触发
+// 反应动画都从这里走）；complete 监听同样无条件注册（login/touch 单次动画播完
+// 的回待机切换依赖它）。
+function initInteract() {
+  interactEnabled = isInteractiveSkin();
+  skeletons.forEach(function (l) {
+    if (l.state) l.state.addListener({ complete: onInteractComplete });
+  });
+  canvas.addEventListener("mousedown", function (e) {
+    if (e.button !== 0) return;
+    // 互动开关关闭：不触发互动动画/语音
+    if (!interactOn) return;
+    dragging = true;
+    // 纯表情皮肤（无 drag/touch/login）：点击循环切换全部表情
+    if (!isInteractiveSkin()) {
+      if (hasExpressions()) cycleExpression();
+      return;
+    }
+    // ★ drag 皮肤：直接走本地 drag 状态机（drag→ex→drag_ex→normal）。
+    //   官方 config_client 对 drag 皮肤规则与本地状态机等价，但 playRuleAction
+    //   只播 action 不驱动完整状态机（complete 后不自动切 ex/normal），会卡死。
+    if (animNames0().indexOf("drag") >= 0 && animNames0().indexOf("ex") >= 0) {
+      startInteractDrag();
+      spinePlayVoice("touch_body");
+      return;
+    }
+    // 官方规则状态机：touch 系 skin 按当前 idle 匹配规则（无规则走下方回退）
+    if (playRuleAction(null)) return;
+    if (animNames0().indexOf("drag") >= 0) {
+      startInteractDrag();
+      spinePlayVoice("touch_body");
+    } else if (hasExpressions()) {
+      // 互动皮肤但命中不到规则：有表情则切表情
+      cycleExpression();
+    } else {
+      cycleTouchInteract();
+    }
+  });
+  window.addEventListener("mouseup", function () { dragging = false; });
+  // 若当前动画不是 normal（用户通过 WE 切了表情/动作），互动拖拽不打断
+  if (interactState === "normal") {
+    // 皮肤有 login 入场动画且开场动画开关开启时：开场播一次 login 再回 normal
+    //（login 完成后切回 normal 循环；若用户拖拽则互动状态机接管）。
+    // INTRO_ON=false（导出时关了开场动画）则直接 normal 待机。
+    if (hasAnim0("login") && INTRO_ON) {
+      interactState = "login";
+      currentIdle = "normal";
+      playInteractAnim("login", false);
+      skeletons.forEach(function (l) {
+        if (l.state) l.state.addListener({
+          complete: function (entry) {
+            if (entry && entry.trackIndex === 0 && interactState === "login") {
+              interactState = "normal";
+              playInteractAnim("normal", true);
+            }
+          }
+        });
+      });
+    } else {
+      playInteractAnim("normal", true);
+    }
+  }
+}
+
+
 
 function init() {
   canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;

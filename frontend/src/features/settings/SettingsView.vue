@@ -27,6 +27,12 @@
           <n-button size="small" secondary @click="openDir('download')">打开下载目录</n-button>
           <n-button size="small" secondary @click="openDir('extracted')">打开提取目录</n-button>
         </div>
+        <div class="field" style="margin-top: 12px; margin-bottom: 0">
+          <n-checkbox v-model:checked="cleanBundlesOnExit">
+            关闭软件时自动清理已提取的下载包（保留提取产物）
+          </n-checkbox>
+          <span class="dim">原始下载包只用于下载后的提取，提取完成即不再需要；自动清理会删除已成功提取皮肤的下载包，预览 / 导出 / 一键应用不受影响。提取失败或未提取的皮肤会保留原包以便重试。</span>
+        </div>
       </n-card>
 
       <n-card title="壁纸导出" size="small" class="wc-card">
@@ -209,6 +215,9 @@
             </template>
             将删除 bundles 与 extracted 目录中的所有下载内容，且不可撤销，确定吗？
           </n-popconfirm>
+          <n-button size="small" secondary :loading="cleaningBundles" @click="cleanupBundles">
+            清理已提取下载包
+          </n-button>
           <span class="dim">
             共 {{ downloaded.length }} 个皮肤
             <span v-if="selCount"> · 已选 {{ selCount }}</span>
@@ -321,6 +330,8 @@ const soundVolume = ref(getSoundPrefs().volume)
 const voiceDownload = ref(false)
 const voiceBackfilling = ref(false)
 const voiceCleaning = ref(false)
+const cleanBundlesOnExit = ref(false)
+const cleaningBundles = ref(false)
 const pluginGroups = [
   { title: '资源来源', items: [{ id: 'cdn', name: '官方 CDN' }, { id: 'local', name: '本地导入' }] },
   { title: '提取器', items: [{ id: 'spine', name: 'Spine 提取' }, { id: 'live2d', name: 'Live2D 提取' }, { id: 'static', name: '静态立绘提取' }] },
@@ -362,6 +373,7 @@ async function loadConfig() {
     if (res && res.ok && res.config) {
       proxy.value = res.config.proxy || ''
       voiceDownload.value = !!res.config.voice_download
+      cleanBundlesOnExit.value = res.config.clean_bundles_on_exit !== false
     }
   } catch (e) {
     /* 后端未启动时忽略，代理保持空 */
@@ -376,6 +388,35 @@ watch(voiceDownload, (v) => {
     bridge.setConfig({ voice_download: !!v })
   }, 400)
 })
+
+// 退出清理开关：修改后保存到后端配置（下次关闭软件生效）
+let cleanBundlesTimer = null
+watch(cleanBundlesOnExit, (v) => {
+  clearTimeout(cleanBundlesTimer)
+  cleanBundlesTimer = setTimeout(() => {
+    bridge.setConfig({ clean_bundles_on_exit: !!v })
+  }, 400)
+})
+
+// 立即清理：删除「已提取完成」皮肤的原始下载包（保留提取产物）
+async function cleanupBundles() {
+  cleaningBundles.value = true
+  try {
+    const res = await bridge.cleanupBundles()
+    if (res && res.ok) {
+      if (res.skipped) message.info('已在设置中关闭退出清理，本次跳过')
+      else if (res.removed && res.removed.length) message.success(`已清理 ${res.removed.length} 个下载包（未提取或提取失败的皮肤资源会自动保留）`)
+      else message.success('没有需要清理的下载包（已全部清理过）')
+      await refresh()
+    } else {
+      message.error((res && res.error) || '清理失败')
+    }
+  } catch (e) {
+    message.error(`清理失败：${e.message || e}`)
+  } finally {
+    cleaningBundles.value = false
+  }
+}
 
 const voiceDlStage = ref('')
 let voiceDlSource = null
@@ -487,15 +528,18 @@ async function delSelected() {
   delDone.value = 0
   delTotal.value = targets.length
   let failed = 0
-  for (const s of targets) {
-    try {
-      const res = await bridge.deleteSkin(s.ship, s.bundle, s.name)
-      if (!(res && res.ok)) failed++
-    } catch (e) {
-      failed++
-    }
-    delDone.value++
+  // 批量接口：后端一次删完全部文件只重建一次索引（逐个调用是 N 次全量重建，很慢）。
+  // 进度按已提交数量显示（批量接口原子完成，无逐个回调）。
+  try {
+    const items = targets.map((s) => ({ ship: s.ship, bundle: s.bundle, name: s.name }))
+    const res = await bridge.deleteSkinsBatch(items)
+    if (res && res.ok === false && res.failed_count != null) failed = res.failed_count
+    else if (res && res.failed_count != null) failed = res.failed_count
+    else if (res && res.ok === false) failed = targets.length
+  } catch (e) {
+    failed = targets.length
   }
+  delDone.value = delTotal.value
   deletingSel.value = false
   selKeys.value = new Set()
   await refresh()
@@ -625,6 +669,7 @@ onActivated(refresh)
 onBeforeUnmount(() => {
   clearTimeout(proxyTimer)
   clearTimeout(voiceTimer)
+  clearTimeout(cleanBundlesTimer)
 })
 </script>
 

@@ -283,23 +283,80 @@ def convert_acb(acb: Path, out_dir: Path, cancel_event: threading.Event | None =
     """把 CriWare cue 包逐条解码为 {cue}.wav，返回 cue 名列表。
 
     vgmstream 按扩展名识别格式，.b 会识别失败，这里用临时 .acb 副本。
+    转换结束后删除临时副本（否则每个语音包都会残留一个等大的 .acb）。
     """
     acb_path = acb.with_suffix(".acb")
     if not acb_path.exists():
         import shutil
         shutil.copy2(acb, acb_path)
-    names = _cue_names(acb_path)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    done: list[str] = []
-    for i, name in enumerate(names, 1):
-        if cancel_event and cancel_event.is_set():
-            break
-        wav = out_dir / f"{name}.wav"
-        if not wav.exists():
-            _vgmstream(["-o", str(wav), "-s", str(i), str(acb_path)])
-        if wav.exists() and wav.stat().st_size > 0:
-            done.append(name)
-    return done
+    try:
+        names = _cue_names(acb_path)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        done: list[str] = []
+        for i, name in enumerate(names, 1):
+            if cancel_event and cancel_event.is_set():
+                break
+            wav = out_dir / f"{name}.wav"
+            if not wav.exists():
+                _vgmstream(["-o", str(wav), "-s", str(i), str(acb_path)])
+            if wav.exists() and wav.stat().st_size > 0:
+                done.append(name)
+        return done
+    finally:
+        acb_path.unlink(missing_ok=True)
+
+
+# 壁纸工具真正播放的互动类别：点头/身/特、登录、待机（CUE_FOR_LABEL 的值）
+_KEEP_BASES = tuple(CUE_FOR_LABEL.values())
+
+
+def _is_keep_cue(cue: str) -> bool:
+    """该 cue 是否属于壁纸工具会播放的类别。
+
+    保留：5 类互动的全部变体（base、base_{N} 皮肤专属、base_ex1100 L2D 变体）
+    + 全部待机 main_N（导出时整批复制）。其余（detail 详情 / expedition 远征 /
+    asmr / 战斗剧情等）一律不保留。保留所有互动变体是为了：以后下载同船新皮肤时，
+    其专属语音（{base}_{N}）仍可命中 pick_cue，不会被提前删掉。
+    """
+    if IDLE_CUE_RE.match(cue) or cue.startswith("main_"):
+        return True
+    for b in _KEEP_BASES:
+        if cue == b or cue.startswith(b + "_"):
+            return True
+    return False
+
+
+def _keep_cues(ship_id: int, all_cues: set[str]) -> set[str]:
+    """该船的保留 cue 集合：类别规则 + voice_skin_map 里该船皮肤的映射值（特殊命名兜底）。"""
+    keep = {c for c in all_cues if _is_keep_cue(c)}
+    try:
+        for painting, m in voice_skin_map().items():
+            if ship_id_for(painting) == ship_id:
+                for c in (m or {}).values():
+                    if c:
+                        keep.add(c)
+    except Exception:  # noqa: BLE001
+        pass
+    return keep
+
+
+def prune_voice(ship_id: int) -> int:
+    """删除该船语音中壁纸工具用不到的 cue wav（远征/ASMR/detail 等）。
+
+    源包 .b 保留，之后需要时可重新转换；返回删除的文件数。
+    下载转换完成后自动调用；已有语音（已裁剪过）时不会重复触发。
+    """
+    d = voice_dir(ship_id)
+    if not d.is_dir():
+        return 0
+    all_cues = {f.stem for f in d.glob("*.wav")}
+    keep = _keep_cues(ship_id, all_cues)
+    removed = 0
+    for f in d.glob("*.wav"):
+        if f.stem not in keep:
+            f.unlink(missing_ok=True)
+            removed += 1
+    return removed
 
 
 def download_voice(
@@ -358,5 +415,10 @@ def download_voice(
     except Exception as e:  # noqa: BLE001
         stage("语音解码失败", str(e)[:80])
         return None
-    stage("语音就绪", f"{ship_id} 共 {len(list(out_dir.glob('*.wav')))} 条")
+    # 裁剪：删除壁纸工具用不到的 cue（远征/ASMR/detail 等），保留互动 5 类全部变体 + 待机 main_N
+    pruned = prune_voice(ship_id)
+    stage(
+        "语音就绪",
+        f"{ship_id} 共 {len(list(out_dir.glob('*.wav')))} 条（已裁剪 {pruned} 条未使用语音）",
+    )
     return out_dir

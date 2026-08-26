@@ -108,8 +108,11 @@ def main() -> None:
     logger.info("app start: backend port=%s static port=%s", BACKEND_PORT, STATIC_PORT)
     ensure_runtime_dirs()
     # 后端 API（8766）
+    own_backend = False
     if not port_open(BACKEND_PORT):
         import backend_server
+
+        own_backend = True
 
         def _run_backend() -> None:
             try:
@@ -187,6 +190,17 @@ def main() -> None:
         if save_timer:
             save_timer.cancel()
         persist(lambda p: p.update(last_size))
+        # 退出清理：删除「已提取完成」皮肤的原始下载包（本进程拥有后端时才清理，
+        # 复用其它实例后端时不动数据目录）。失败不影响退出。
+        if own_backend:
+            try:
+                res = backend_server.cleanup_processed_bundles()
+                if res.get("removed"):
+                    logger.info("退出清理：删除 %s 个已提取皮肤的下载包", len(res["removed"]))
+                elif res.get("skipped"):
+                    logger.info("退出清理：已在设置中关闭，跳过")
+            except Exception:  # noqa: BLE001
+                logger.exception("退出清理失败")
 
     window.events.resized += on_resized
     window.events.maximized += on_maximized

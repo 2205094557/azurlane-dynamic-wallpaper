@@ -21089,6 +21089,7 @@
   let voiceOn = true;
   let introOn = true;
   let interactOn = true;
+  let mouseTrackOn = true;
   let interaction = null;
   function applyLayout() {
     if (!model || !initW || !initH) return;
@@ -21103,6 +21104,20 @@
     model.scale.set(out.sx);
     model.position.set(out.x, out.y);
   }
+  function onMouseMove(e) {
+    if (!mouseTrackOn || !model) return;
+    model.focus(e.clientX, e.clientY);
+  }
+  function setMouseTrack(on) {
+    var _a, _b;
+    mouseTrackOn = on;
+    if (!on) {
+      try {
+        (_b = (_a = model == null ? void 0 : model.internalModel) == null ? void 0 : _a.focusController) == null ? void 0 : _b.focus(0, 0, true);
+      } catch (e) {
+      }
+    }
+  }
   async function start() {
     var _a;
     const cfg = window.__L2D_CONFIG;
@@ -21115,6 +21130,7 @@
     voiceOn = init2.voice !== false;
     introOn = init2.intro !== false;
     interactOn = init2.interact !== false;
+    mouseTrackOn = init2.track !== false;
     app = new Application({
       view: document.getElementById("canvas"),
       transparent: true,
@@ -21122,7 +21138,13 @@
       resizeTo: window,
       antialias: true
     });
-    model = await Live2DModel.from(cfg.model, { autoUpdate: true });
+    model = await Live2DModel.from(cfg.model, {
+      autoUpdate: true,
+      // 关闭库自带的鼠标追踪（autoInteract 会监听 interactionManager 的
+      // pointermove 并自动 focus），改为自定义 mousemove 实现，以便 WE 面板
+      // 「鼠标追踪」开关能实时开/关；自定义互动不依赖 pixi interaction，不受影响。
+      autoInteract: false
+    });
     model.anchor.set(0.5, 0.5);
     app.stage.addChild(model);
     const motionManager = (_a = model.internalModel) == null ? void 0 : _a.motionManager;
@@ -21133,7 +21155,12 @@
         const m = (_b = (_a2 = motionManager.motionGroups) == null ? void 0 : _a2[group]) == null ? void 0 : _b[index];
         const autoLoop = !!(m && m._motionData && m._motionData.loop);
         const loop = forceLoop !== null ? forceLoop : autoLoop;
-        if (m && typeof m.setIsLoop === "function") m.setIsLoop(loop);
+        if (m && typeof m.setIsLoop === "function") {
+          m.setIsLoop(loop);
+          if (typeof m.setIsLoopFadeIn === "function") m.setIsLoopFadeIn(false);
+          if (typeof m.setFadeInTime === "function") m.setFadeInTime(0);
+          if (typeof m.setFadeOutTime === "function") m.setFadeOutTime(0);
+        }
         resumeOnFinish = forceLoop === false;
       });
       motionManager.on("motionFinish", () => {
@@ -21147,6 +21174,7 @@
     initW = model.width;
     initH = model.height;
     applyLayout();
+    window.addEventListener("mousemove", onMouseMove);
     try {
       meta = await (await fetch(cfg.model)).json();
       const labels = [];
@@ -21195,6 +21223,9 @@
       return false;
     }
     interaction = WL.l2dInteraction(model, document.getElementById("canvas"), {
+      // 导出壁纸只保留摸头/摸身体/特殊三部位点按；拖拽（touch_drag*）与待机区
+      // （touch_idle*）不再触发任何互动动作
+      dragEnabled: false,
       // touch_* 只播不记录，拖拽结束恢复的还是拖拽前的动作
       play: (label, fromDrag) => {
         const isDrag = /^touch_drag/i.test(label || "");
@@ -21323,12 +21354,17 @@
           if (properties.voice) voiceOn = !!properties.voice.value;
           if (properties.playintro) introOn = !!properties.playintro.value;
           if (properties.interact) interactOn = !!properties.interact.value;
+          if (properties.mousetrack) setMouseTrack(!!properties.mousetrack.value);
           return;
         }
         if (properties.scalectrl) scale = WL.clampScale(properties.scalectrl.value);
         if (properties.offsetx) ox = WL.clampOffset(properties.offsetx.value);
         if (properties.offsety) oy = WL.clampOffset(properties.offsety.value);
-        if (properties.alignment) alignment = WL.ALIGN_ORDER[properties.alignment.value] || alignment;
+        if (properties.alignment) {
+          const av = properties.alignment.value;
+          if (typeof av === "number") alignment = WL.ALIGN_ORDER[av] || alignment;
+          else if (typeof av === "string") alignment = av;
+        }
         if (properties.voice) {
           voiceOn = !!properties.voice.value;
           if (!voiceOn && voiceAudio) {
@@ -21337,6 +21373,7 @@
           }
         }
         if (properties.playintro) introOn = !!properties.playintro.value;
+        if (properties.mousetrack) setMouseTrack(!!properties.mousetrack.value);
         if (properties.interact) {
           interactOn = !!properties.interact.value;
           if (interaction) interaction.setEnabled(interactOn);

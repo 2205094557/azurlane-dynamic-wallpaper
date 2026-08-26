@@ -24,10 +24,11 @@ let lastMotionLabel = ''
 let forceLoop = null // null=按动作自带 Meta.Loop；true/false=强制循环/播一次
 let resumeOnFinish = false
 // WE 面板开关（右侧属性面板）：语音开/关、开场动画开/关（login 播一次再回 idle）、
-// 互动开/关（点击/拖拽等交互是否生效）
+// 互动开/关（点击/拖拽等交互是否生效）、鼠标追踪开/关（视线/头部跟随鼠标）
 let voiceOn = true
 let introOn = true
 let interactOn = true
+let mouseTrackOn = true
 // 互动控制器（start() 内创建，提升为模块级以便 WE 面板实时切换）
 let interaction = null
 
@@ -45,6 +46,23 @@ function applyLayout() {
   model.position.set(out.x, out.y)
 }
 
+// 鼠标追踪：鼠标移动时让角色视线/头部跟随（受 WE 面板「鼠标追踪」开关控制）
+function onMouseMove(e) {
+  if (!mouseTrackOn || !model) return
+  model.focus(e.clientX, e.clientY)
+}
+
+// 切换鼠标追踪：关闭时把视线/头部参数平滑归零（focusController 目标置 0，
+// 参数累加量归零后恢复动画原本的姿态）
+function setMouseTrack(on) {
+  mouseTrackOn = on
+  if (!on) {
+    try {
+      model?.internalModel?.focusController?.focus(0, 0, true)
+    } catch (e) { /* 模型未就绪时忽略 */ }
+  }
+}
+
 async function start() {
   const cfg = window.__L2D_CONFIG
   const init = window.__L2D_INIT || {}
@@ -57,6 +75,7 @@ async function start() {
   voiceOn = init.voice !== false
   introOn = init.intro !== false
   interactOn = init.interact !== false
+  mouseTrackOn = init.track !== false
 
   app = new Application({
     view: document.getElementById('canvas'),
@@ -65,7 +84,13 @@ async function start() {
     resizeTo: window,
     antialias: true,
   })
-  model = await Live2DModel.from(cfg.model, { autoUpdate: true })
+  model = await Live2DModel.from(cfg.model, {
+    autoUpdate: true,
+    // 关闭库自带的鼠标追踪（autoInteract 会监听 interactionManager 的
+    // pointermove 并自动 focus），改为自定义 mousemove 实现，以便 WE 面板
+    // 「鼠标追踪」开关能实时开/关；自定义互动不依赖 pixi interaction，不受影响。
+    autoInteract: false,
+  })
   model.anchor.set(0.5, 0.5)
   app.stage.addChild(model)
   // pixi-live2d-display 0.4.0 会忽略动作自带的 Loop 标志，动作播完会自动随机切 Idle 姿势。
@@ -78,7 +103,19 @@ async function start() {
       // 循环与否优先按动作自带 Meta.Loop；forceLoop 仅用于拖拽与 home
       const autoLoop = !!(m && m._motionData && m._motionData.loop)
       const loop = forceLoop !== null ? forceLoop : autoLoop
-      if (m && typeof m.setIsLoop === 'function') m.setIsLoop(loop)
+      if (m && typeof m.setIsLoop === 'function') {
+        m.setIsLoop(loop)
+        // 循环时禁止“循环重淡入”：Cubism SDK 在循环点会重置 fadeInStartTime
+        //（_isLoopFadeIn 默认 true），fadeIn 权重瞬间归零再花 2 秒淡入，
+        // 每循环一次就“顿一下回默认姿势再淡入”——这就是 idle 卡顿感的来源。
+        // 关闭后循环点权重连续，达到 Spine 那种无缝衔接。
+        if (typeof m.setIsLoopFadeIn === 'function') m.setIsLoopFadeIn(false)
+        // 禁用动作淡入淡出（默认 idle 组 fadeIn 长达 2 秒）：权重恒 1，
+        // idle 循环点与 login→idle 切换都立即生效，消除“渐停/淡入”的卡顿感
+        //（Spine 的 loop 就是无 fade 直接循环）。
+        if (typeof m.setFadeInTime === 'function') m.setFadeInTime(0)
+        if (typeof m.setFadeOutTime === 'function') m.setFadeOutTime(0)
+      }
       // 只回退“显式要求播一次”的动作（头/身/特反应、进场 login）：
       // 数据自带的 Loop 不影响回退决策，保证 idle 区域点击（强制循环）不自动跳回。
       resumeOnFinish = forceLoop === false
@@ -95,6 +132,9 @@ async function start() {
   initW = model.width
   initH = model.height
   applyLayout()
+  // 鼠标追踪：视线/头部跟随鼠标（pixi-live2d-display 的 model.focus 会按
+  // 鼠标相对模型的方向驱动 ParamEyeBall/Angle/BodyAngle，与库内置行为一致）
+  window.addEventListener('mousemove', onMouseMove)
   try {
     meta = await (await fetch(cfg.model)).json()
     // 进场目标：预览选中的动作优先，否则默认 idle/home/第一个
@@ -158,6 +198,9 @@ function labelsHas(label) {
 // 壁纸端恒为互动模式：点击播 touch_*，按住拖动播 touch_drag*，松手恢复拖拽前动作。
 // 互动开关（WE 面板「互动」）可整体关闭：interaction.setEnabled 内部已按 enabled 拦截事件。
 interaction = WL.l2dInteraction(model, document.getElementById('canvas'), {
+  // 导出壁纸只保留摸头/摸身体/特殊三部位点按；拖拽（touch_drag*）与待机区
+  // （touch_idle*）不再触发任何互动动作
+  dragEnabled: false,
   // touch_* 只播不记录，拖拽结束恢复的还是拖拽前的动作
   play: (label, fromDrag) => {
     const isDrag = /^touch_drag/i.test(label || '')
@@ -304,16 +347,22 @@ window.wallpaperPropertyListener = {
       if (!_initialPropsApplied) {
         _initialPropsApplied = true
         // 布局类属性（scale/offset/alignment）一律以导出内联值为准，忽略首推；
-        // 语音/开场/互动是用户偏好：首推若含（WE 存储的覆盖值）立即采纳，重启后仍保持
+        // 语音/开场/互动/鼠标追踪是用户偏好：首推若含（WE 存储的覆盖值）立即采纳，重启后仍保持
         if (properties.voice) voiceOn = !!properties.voice.value
         if (properties.playintro) introOn = !!properties.playintro.value
         if (properties.interact) interactOn = !!properties.interact.value
+        if (properties.mousetrack) setMouseTrack(!!properties.mousetrack.value)
         return
       }
       if (properties.scalectrl) scale = WL.clampScale(properties.scalectrl.value)
       if (properties.offsetx) ox = WL.clampOffset(properties.offsetx.value)
       if (properties.offsety) oy = WL.clampOffset(properties.offsety.value)
-      if (properties.alignment) alignment = WL.ALIGN_ORDER[properties.alignment.value] || alignment
+      // WE combo 推送 value：新版为字符串（对齐名），旧版为下标（数字），都兼容
+      if (properties.alignment) {
+        const av = properties.alignment.value
+        if (typeof av === 'number') alignment = WL.ALIGN_ORDER[av] || alignment
+        else if (typeof av === 'string') alignment = av
+      }
       if (properties.voice) {
         voiceOn = !!properties.voice.value
         // 关语音立即停掉正在播放的 cue
@@ -323,6 +372,7 @@ window.wallpaperPropertyListener = {
         }
       }
       if (properties.playintro) introOn = !!properties.playintro.value
+      if (properties.mousetrack) setMouseTrack(!!properties.mousetrack.value)
       if (properties.interact) {
         interactOn = !!properties.interact.value
         // 互动开关实时生效；模型未就绪（interaction 未创建）时由 start() 按 interactOn 初始化

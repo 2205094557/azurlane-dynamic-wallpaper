@@ -249,7 +249,12 @@ def is_new_ship_base(p: str) -> bool:
     low = p.lower()
     if not low or len(low) < 2:
         return False
-    if low.startswith(("npc", "boss", "unknown")) or low in ("mat", "emperor"):
+    _TOOLS_DIR = Path(__file__).resolve().parent
+    if str(_TOOLS_DIR) not in sys.path:
+        sys.path.insert(0, str(_TOOLS_DIR))
+    from npc_filter import is_npc_painting  # noqa: E402
+
+    if is_npc_painting(low) or low in ("mat", "emperor"):
         return False
     if re.search(r"_\d+$", low):
         return False

@@ -40,6 +40,10 @@ const props = defineProps({
   alignment: { type: String, default: 'center' },
   interactionMode: { type: Boolean, default: false },
   showHitAreas: { type: Boolean, default: false },
+  // 开场动画开关（导出面板「开场动画」联动）：关闭后预览不播 login 开场，直接播待机
+  intro: { type: Boolean, default: true },
+  // 鼠标追踪开关：角色视线/头部跟随鼠标（与壁纸端 WE 面板开关一致）
+  mouseTrack: { type: Boolean, default: true },
 })
 const emit = defineEmits(['ready', 'error', 'animations', 'scaleChange', 'panChange', 'subtitle'])
 
@@ -333,7 +337,13 @@ async function load() {
       /* 忽略单帧异常 */
     }
   })
-  model = await Live2DModel.from(`${base}/${modelPath}`, { autoUpdate: true })
+  model = await Live2DModel.from(`${base}/${modelPath}`, {
+    autoUpdate: true,
+    // 关闭库自带的鼠标追踪（autoInteract 会监听 interactionManager 的
+    // pointermove 并自动 focus），改为自定义 mousemove 实现，以便「鼠标追踪」
+    // 开关能实时开/关；自定义互动不依赖 pixi interaction，不受影响。
+    autoInteract: false,
+  })
   if (disposed) {
     // 卸载时 app 已 destroy，model 尚未挂到舞台：手动释放避免资源残留
     model.destroy?.()
@@ -353,7 +363,19 @@ async function load() {
       // forceLoop 仅用于拖拽（拖动期间循环）和 home（入场播一次）。
       const autoLoop = !!(m && m._motionData && m._motionData.loop)
       const loop = forceLoop !== null ? forceLoop : autoLoop
-      if (m && typeof m.setIsLoop === 'function') m.setIsLoop(loop)
+      if (m && typeof m.setIsLoop === 'function') {
+        m.setIsLoop(loop)
+        // 循环时禁止“循环重淡入”：Cubism SDK 在循环点会重置 fadeInStartTime
+        //（_isLoopFadeIn 默认 true），fadeIn 权重瞬间归零再花 2 秒淡入，
+        // 每循环一次就“顿一下回默认姿势再淡入”——这就是 idle 卡顿感的来源。
+        // 关闭后循环点权重连续，达到 Spine 那种无缝衔接。
+        if (typeof m.setIsLoopFadeIn === 'function') m.setIsLoopFadeIn(false)
+        // 禁用动作淡入淡出（默认 idle 组 fadeIn 长达 2 秒）：权重恒 1，
+        // idle 循环点与 login→idle 切换都立即生效，消除“渐停/淡入”的卡顿感
+        //（Spine 的 loop 就是无 fade 直接循环）。
+        if (typeof m.setFadeInTime === 'function') m.setFadeInTime(0)
+        if (typeof m.setFadeOutTime === 'function') m.setFadeOutTime(0)
+      }
       // 只回退“显式要求播一次”的动作（头/身/特反应、进场 login）：
       // 循环与否按 forceLoop 显式值判断，数据自带的 Loop 不影响回退决策，
       // 保证 idle 区域点击（强制循环）无论发生什么都不自动跳回。
@@ -372,6 +394,9 @@ async function load() {
   initW = model.width
   initH = model.height
   applyLayout()
+  // 鼠标追踪：视线/头部跟随鼠标（pixi-live2d-display 的 model.focus 会按
+  // 鼠标相对模型的方向驱动 ParamEyeBall/Angle/BodyAngle，与库内置行为一致）
+  window.addEventListener('mousemove', onTrackMove)
   // 进场目标：父级选中的动画优先，否则默认 idle/第一个
   const want = props.animation || ''
   const hasLogin = motionList.some((m) => m.label === 'login')
@@ -380,11 +405,12 @@ async function load() {
     (want && motionList.some((m) => m.label === want))
       ? want
       : (hasIdle ? 'idle' : (motionList[0]?.label || ''))
-  // 迎宾：进场先播一次 login（登入动作），播完自动切到 currentLabel；无 login 直接播
+  // 迎宾：进场先播一次 login（登入动作），播完自动切到 currentLabel；
+  // 开场动画开关关闭时直接播待机，不播 login（与导出壁纸行为一致）
   entryPlan = hasLogin ? currentLabel : null
   await loadVoiceStatus()
   if (disposed) return
-  if (hasLogin) {
+  if (hasLogin && props.intro) {
     playMotion('login', false, false)
     playVoice('login')
   }
@@ -414,9 +440,35 @@ watch(
   () => syncMode(),
 )
 
+// 开场动画开关实时生效：关闭时若正在播 login 开场立即切回待机；开启时播一次 login
+watch(
+  () => props.intro,
+  (on) => {
+    if (!model || !motionList.length) return
+    const hasLogin = motionList.some((m) => m.label === 'login')
+    if (!on) {
+      // entryPlan 挂起 = login 开场进行中（播完会自动回退到 currentLabel）
+      if (entryPlan) {
+        entryPlan = null
+        if (currentLabel) playMotion(currentLabel)
+      }
+    } else if (hasLogin && !entryPlan) {
+      entryPlan = currentLabel
+      playMotion('login', false, false)
+      playVoice('login')
+    }
+  },
+)
+
 watch(
   () => props.showHitAreas,
   () => updateHitOverlay(),
+)
+
+// 鼠标追踪开关实时生效：关闭时视线/头部参数归零
+watch(
+  () => props.mouseTrack,
+  (on) => setMouseTrack(on),
 )
 
 function onWheel(e) {
@@ -431,6 +483,21 @@ function onPanDown(e) {
   if (props.interactionMode || e.button !== 0) return
   drag = { x: e.clientX, y: e.clientY, ox: props.offsetX, oy: props.offsetY }
   wrapRef.value.style.cursor = 'grabbing'
+}
+
+// 鼠标追踪：鼠标移动时让角色视线/头部跟随（受「鼠标追踪」开关控制）
+function onTrackMove(e) {
+  if (!props.mouseTrack || !model) return
+  model.focus(e.clientX, e.clientY)
+}
+
+// 切换鼠标追踪：关闭时把视线/头部参数平滑归零（focusController 目标置 0，
+// 参数累加量归零后恢复动画原本的姿态）
+function setMouseTrack(on) {
+  if (on || !model) return
+  try {
+    model.internalModel?.focusController?.focus(0, 0, true)
+  } catch (e) { /* 模型未就绪时忽略 */ }
 }
 
 // 拖拽/缩放（布局模式）与互动模式互斥：按 interactionMode 附加/移除各自的事件。
@@ -587,6 +654,7 @@ onBeforeUnmount(() => {
   }
   window.removeEventListener('resize', onResize)
   window.removeEventListener('mousemove', onMove)
+  window.removeEventListener('mousemove', onTrackMove)
   window.removeEventListener('mouseup', onUp)
   if (interactionCtrl) interactionCtrl.destroy()
   if (app) app.destroy(true)

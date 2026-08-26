@@ -13,7 +13,9 @@ const API_ACTIONS = {
   downloadSkin: { path: '/api/download', method: 'POST' },
   cancelDownload: { path: '/api/download/cancel', method: 'POST' },
   deleteSkin: { path: '/api/library/delete', method: 'POST' },
+  deleteSkinsBatch: { path: '/api/library/delete-batch', method: 'POST' },
   clearDownloads: { path: '/api/library/clear', method: 'POST' },
+  cleanupBundles: { path: '/api/library/cleanup-bundles', method: 'POST' },
   cleanExports: { path: '/api/library/clean-exports', method: 'POST' },
   openDownloadDir: { path: '/api/open/download-dir', method: 'POST' },
   openExtractedDir: { path: '/api/open/extracted-dir', method: 'POST' },
@@ -74,6 +76,11 @@ function bodyFor(name, args) {
     const [all] = args
     return { all: !!all }
   }
+  // 批量删除：args[0] = [{ship,bundle,name}, ...]
+  if (name === 'deleteSkinsBatch') {
+    const [items] = args
+    return { items: items || [] }
+  }
   return {}
 }
 
@@ -129,7 +136,7 @@ async function call(name, ...args) {
   if (API_ACTIONS[name]) {
     try {
       const result = await callBackend(name, args)
-      if (['downloadSkin', 'deleteSkin', 'clearDownloads', 'updateMetadata', 'syncWiki'].includes(name)) mod.invalidateCache()
+      if (['downloadSkin', 'deleteSkin', 'deleteSkinsBatch', 'clearDownloads', 'updateMetadata', 'syncWiki'].includes(name)) mod.invalidateCache()
       return result
     } catch (e) {
       // HTTP 状态错误（接口 500/404 等）与连接失败（服务未启动）区分开
@@ -156,7 +163,9 @@ export const bridge = {
   voiceBackfill: () => call('voiceBackfill'),
   voiceClean: (all = false) => call('voiceClean', all),
   deleteSkin: (ship, bundle, name) => call('deleteSkin', ship, bundle, name),
+  deleteSkinsBatch: (items) => call('deleteSkinsBatch', items),
   clearDownloads: () => call('clearDownloads'),
+  cleanupBundles: () => call('cleanupBundles'),
   cleanExports: () => call('cleanExports'),
   openDownloadDir: () => call('openDownloadDir'),
   openExtractedDir: () => call('openExtractedDir'),

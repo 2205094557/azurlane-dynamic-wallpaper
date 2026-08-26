@@ -1,10 +1,25 @@
 <template>
-  <canvas ref="canvasRef" class="spine-canvas"></canvas>
+  <div ref="wrapRef" class="spine-wrap">
+    <canvas ref="canvasRef" class="spine-canvas"></canvas>
+    <!-- 诊断心跳：每帧更新时间/动画/暂停状态。定格时看它还在不在跳：在跳=渲染输出停；不跳=rAF 停 -->
+    <div class="spine-dbg" :class="{ hidden: !debugOn }">{{ dbgText }}</div>
+    <!-- 交互区域：互动皮肤 + 互动模式 + 显示交互区域时，按部位画提示框
+         （头=touch_head、身体=touch_body、整体=drag/touch 轮换） -->
+    <template v-if="showHitAreas && interactionMode && hitAreas.length">
+      <div
+        v-for="a in hitAreas"
+        :key="a.label"
+        class="spine-hit-overlay"
+        :style="a.style"
+      >{{ a.label }}</div>
+    </template>
+  </div>
 </template>
 
 <script setup>
 import { onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
-import { assetUrl } from '../bridge'
+import { assetUrl, bridge } from '../bridge'
+import { voiceEnabled } from '../utils/voice'
 import '../../../templates/wallpaper-layout.js'
 
 const WL = window.WallpaperLayout
@@ -16,8 +31,22 @@ const props = defineProps({
   offsetX: { type: Number, default: 0 },
   offsetY: { type: Number, default: 0 },
   alignment: { type: String, default: 'center' },
+  // 互动模式：false=拖拽（平移画面）；true=互动（拖拽触发 drag 动画）
+  interactionMode: { type: Boolean, default: false },
+  // 鼠标追踪：角色眼睛/头部跟随鼠标（同 L2D 开关；spine 用 drag 相关骨骼响应）
+  mouseTrack: { type: Boolean, default: true },
+  // 显示交互区域：互动皮肤在互动模式下画角色可拖拽提示框
+  showHitAreas: { type: Boolean, default: false },
+  // 开场动画：开启时互动皮肤先播 login 入场一次再回待机；关闭直接待机
+  intro: { type: Boolean, default: true },
 })
-const emit = defineEmits(['ready', 'error', 'animations', 'scaleChange', 'panChange'])
+const emit = defineEmits(['ready', 'error', 'animations', 'scaleChange', 'panChange', 'subtitle'])
+
+const wrapRef = ref(null)
+const hitAreas = ref([]) // [{label, style, kind}] 部位提示框（head/body/drag）
+const dbgText = ref('')
+// 诊断心跳默认开启（软件无 F12 devtools，定格问题需要直观看到帧计数是否在跳）
+const debugOn = ref(true)
 
 const canvasRef = ref(null)
 
@@ -30,6 +59,37 @@ let disposed = false
 let paused = false // keep-alive 切走（onDeactivated）时暂停渲染循环
 let boundsCache = null
 let drag = null
+// 远程交互区域数据（nagami 数据集 models/{asset}.json 的 hitAreas，游戏 prefab 提取）
+let remoteHitAreas = []
+// ---- Spine 互动状态机 ----
+// 官方逻辑：normal 循环 →(拖身体)→ drag →(播完)→ ex 循环 →(ex 中再拖)→
+// drag_ex →(播完)→ normal 循环。drag/drag_ex 是单次拖拽反应，ex 是互动后的展示。
+let interactState = 'normal' // 'normal' | 'drag' | 'ex' | 'drag_ex'
+let interactTimer = 0
+let voiceShipId = null
+let voicePick = null // { touch_head/touch_body/touch_special/login/home: cue }
+let voiceWords = {}
+const subtitleText = ref('')
+watch(subtitleText, (t) => emit('subtitle', t))
+// 语音关闭时清字幕
+watch(voiceEnabled, (on) => { if (!on) subtitleText.value = '' })
+// 互动 cue → 语音基础名映射（与 Live2D 一致）
+const VOICE_BASE = { touch_head: 'touch_head', touch_body: 'touch_1', touch_special: 'touch_2', login: 'login', home: 'home' }
+const VOICE_FALLBACK = {
+  touch_head: ['touch_head', 'touch_1', 'touch_2'],
+  touch_body: ['touch_1', 'touch_2', 'touch_head'],
+  touch_special: ['touch_2', 'touch_1', 'touch_head'],
+  login: ['login'],
+  home: ['home'],
+}
+const WORDS_KEY = { touch_head: 'headtouch', touch_1: 'touch', touch_2: 'touch2', login: 'login', home: 'home' }
+const WORDS_FALLBACK = {
+  headtouch: ['headtouch', 'touch', 'touch2'],
+  touch: ['touch', 'touch2', 'headtouch'],
+  touch2: ['touch2', 'touch', 'headtouch'],
+  login: ['login'],
+  home: ['home'],
+}
 
 function clamp(v, lo, hi) {
   return Math.min(hi, Math.max(lo, v))
@@ -123,13 +183,231 @@ function pickAnim(data) {
   return idle || names[0] || ''
 }
 
+// 表情类动画判定：碧蓝 spine 的数字动画（1/2/3...）是"表情集"——只含 1 帧
+// AttachmentTimeline（duration=0），在 t=0 切换眼睛/嘴等附件，不是循环动作。
+// 它们必须叠加到独立 track（track 1）上，与 track 0 的 normal 动作同时生效；
+// 若用 setAnimation(0,...) 替换 track 0 的 normal，骨架会回到无动作状态变静态。
+function isExpression(name, data) {
+  const a = data && data.animations && data.animations.find((x) => x.name === name)
+  return !!(a && a.duration <= 0)
+}
+
 function playAnimation(name) {
   if (!layers.length) return
   for (const l of layers) {
     if (!l.skeleton) continue
-    const target = name && l.data.animations.some((a) => a.name === name) ? name : pickAnim(l.data)
-    if (target) l.state.setAnimation(0, target, true)
+    if (!name) {
+      // 无指定动画：播放默认（idle/normal）动作
+      const t = pickAnim(l.data)
+      if (t) l.state.setAnimation(0, t, true)
+      continue
+    }
+    if (!l.data.animations.some((a) => a.name === name)) {
+      // 当前层没有该动画：回退默认动作
+      const t = pickAnim(l.data)
+      if (t) l.state.setAnimation(0, t, true)
+      continue
+    }
+    if (isExpression(name, l.data)) {
+      // 表情：叠加到 track 1，不覆盖 track 0 的动作；播放一次即可（只切附件）。
+      // 关键：若 track 0 当前无动作（如导出的初始动画本身就是表情），
+      // 必须先播默认动作到 track 0，否则表情叠加在空 track 上 = 静态。
+      const cur = l.state.getCurrent(0)
+      if (!cur) {
+        const def = pickAnim(l.data)
+        if (def) l.state.setAnimation(0, def, true)
+      }
+      l.state.setAnimation(1, name, false)
+    } else {
+      // 常规动作：替换 track 0，循环播放；同时清掉 track 1 的表情残留
+      l.state.clearTrack(1)
+      l.state.setAnimation(0, name, true)
+    }
   }
+}
+
+// ============ Spine 互动（drag/touch 两类互动皮肤） ============
+
+function animNames() {
+  // 所有骨架层的动画名集合（取第一层的即可，多层骨架动画名一致）
+  const skel = layers.find((l) => l.skeleton)
+  return skel ? skel.data.animations.map((a) => a.name) : []
+}
+function hasAnim(name) {
+  const names = animNames()
+  return !!name && names.includes(name)
+}
+
+// 互动皮肤两类：
+// 1) drag 系：有 drag/ex 动画（拖拽反应状态机 drag → ex → drag_ex → normal）
+// 2) touch 系：有 login/touch_body/touch_head/touch_special 等动画
+//   （开场 login 撥一次回 normal；点击部位播对应 touch 动画一次回 normal，
+//    如 腓特烈大帝·携心夜烛 feiteliedadi_5）
+const TOUCH_ANIMS = ['touch_body', 'touch_head', 'touch_special']
+function isInteractiveSkin() {
+  const n = animNames()
+  if (n.includes('drag') && n.includes('ex')) return true
+  if (TOUCH_ANIMS.some((t) => n.includes(t)) || n.includes('login')) return true
+  // 远程数据集有该皮肤的 hitAreas 也视为互动皮肤（如 kaiersheng_2 等纯表情+hit 皮肤）
+  return remoteHitAreas.length > 0
+}
+
+// 当前皮肤是哪类互动：'drag' | 'touch' | ''
+function interactKind() {
+  const n = animNames()
+  if (n.includes('drag') && n.includes('ex')) return 'drag'
+  if (TOUCH_ANIMS.some((t) => n.includes(t))) return 'touch'
+  if (n.includes('login')) return 'touch'
+  return ''
+}
+
+// 播放互动状态机动画（track 0 替换；表情不参与）
+function playInteractAnim(name, loop) {
+  for (const l of layers) {
+    if (!l.skeleton) continue
+    if (l.data.animations.some((a) => a.name === name)) {
+      l.state.clearTrack(1)
+      l.state.setAnimation(0, name, loop)
+    }
+  }
+}
+
+// 进入互动状态
+function enterInteract(state) {
+  if (interactState === state) return
+  interactState = state
+  switch (state) {
+    case 'drag': playInteractAnim('drag', false); break
+    case 'ex': playInteractAnim('ex', true); break
+    case 'drag_ex': playInteractAnim('drag_ex', false); break
+    case 'normal': playInteractAnim('normal', true); break
+  }
+}
+
+// 动画完成回调：drag → ex；drag_ex → normal；
+// 官方规则动作（touch_* 等）播完 → 切到规则的 change_idle 循环
+// spine AnimationState complete 回调参数是 TrackEntry 对象，trackIndex 在 entry.trackIndex。
+// 注意：loop=true 的循环动画每圈结束也会触发 complete（如 touch_special_normal
+// 待机循环），必须排除——否则循环待机一圈就被切回 normal。
+function onInteractComplete(entry) {
+  if (!entry || entry.trackIndex !== 0) return
+  if (entry.loop) return // 循环动画每圈 complete 不处理（ex/normal 由 spine 自动续圈）
+  const name = entry.animation ? entry.animation.name : ''
+  if (interactState === 'drag') {
+    enterInteract('ex')
+  } else if (interactState === 'drag_ex') {
+    enterInteract('normal')
+  } else if (/^touch_|^login$/.test(name)) {
+    // 官方规则：单次互动动画播完 → 进入 change_idle 待机循环
+    // （currentIdle 已在播放时更新为 change_idle；无规则时回 normal）
+    playInteractAnim(currentIdle, true)
+  }
+}
+
+// 拖拽开始：互动模式下触发 drag（若在 ex 中则触发 drag_ex）
+function startInteractDrag() {
+  if (!isInteractiveSkin() || !props.interactionMode) return
+  if (interactState === 'ex' || interactState === 'drag_ex') {
+    enterInteract('drag_ex')
+  } else {
+    enterInteract('drag')
+  }
+}
+
+// ---- 官方互动规则状态机（config_client）----
+// 规则语义（来自游戏 drag_data.config_client）：
+//   { hit, action, idle, change_idle, is_default, click, fold }
+//   当前待机 = rule.idle 的皮肤被点击(hit) → 播 action 一次 → 切到
+//   change_idle 循环（change_idle 可能是 normal 或特殊待机如 touch_special_normal）。
+// 无远程规则时回退 cycleTouchInteract 轮换。
+let currentIdle = 'normal' // 当前待机动画（规则匹配键）
+
+function pickRule() {
+  if (!remoteInteractRules.length) return null
+  // 先精确匹配当前 idle；无则用 is_default 规则
+  let rule = remoteInteractRules.find((r) => r.idle === currentIdle && r.click !== false && r.action)
+  if (!rule) rule = remoteInteractRules.find((r) => r.is_default && r.action)
+  return rule || null
+}
+
+// 点击 → 按官方规则播放（返回 true 表示已由规则处理）
+function playRuleAction() {
+  const rule = pickRule()
+  if (!rule) return false
+  const action = rule.action
+  if (!hasAnim(action)) return false
+  currentIdle = rule.change_idle || 'normal' // 动作播完后进入的新待机
+  playInteractAnim(action, false)
+  // 对应部位语音
+  playVoice(/touch/.test(action) ? action : 'touch_body')
+  return true
+}
+
+// ---- 互动语音（与 L2D 共用 cue 系统） ----
+async function loadVoiceStatus() {
+  try {
+    const vs = await bridge.voiceStatus(props.skin.painting || '')
+    if (vs && vs.ok && vs.shipId && vs.cues.length) {
+      voiceShipId = vs.shipId
+      voicePick = vs.pick || {}
+      voiceWords = vs.words || {}
+      console.log('[spine] 语音就绪：船', voiceShipId, 'pick', JSON.stringify(voicePick))
+    }
+  } catch (e) {
+    console.log('[spine] 语音加载失败：', e.message || e)
+  }
+}
+
+let voiceAudio = null
+
+function playVoiceCue(cue, text) {
+  if (!voiceShipId || !cue) return
+  if (!voiceEnabled.value) return
+  try {
+    // 防重复：先停掉上一个语音（连续点击不叠加、不重复播放）
+    if (voiceAudio) {
+      voiceAudio.pause()
+      voiceAudio.close && voiceAudio.close()
+      voiceAudio = null
+    }
+    const a = new Audio(assetUrl(`voice/${voiceShipId}/${cue}.wav`))
+    a.volume = 0.9
+    a.play().catch(() => { if (voiceAudio === a) voiceAudio = null; subtitleText.value = '' })
+    voiceAudio = a
+    subtitleText.value = text || ''
+  } catch (e) { /* 无语音不影响互动 */ }
+}
+
+function playVoice(label) {
+  if (!voicePick) return
+  const base = VOICE_BASE[label] || label
+  let cue = null, cueBase = ''
+  for (const b of VOICE_FALLBACK[base] || [base]) {
+    if (voicePick[b]) { cue = voicePick[b]; cueBase = b; break }
+  }
+  if (!cue) return
+  let text = ''
+  const wk = WORDS_KEY[cueBase]
+  if (wk) {
+    for (const w of WORDS_FALLBACK[wk] || [wk]) {
+      if (voiceWords[w]) { text = voiceWords[w]; break }
+    }
+  }
+  playVoiceCue(cue, text)
+}
+
+// touch 系互动：点击轮换播 touch 动画（body → head → special → body...），
+// 每个动画播一次自动回 normal（onInteractComplete 处理），并播对应类别语音
+let touchIndex = -1
+function cycleTouchInteract() {
+  const n = animNames()
+  const order = TOUCH_ANIMS.filter((t) => n.includes(t))
+  if (!order.length) return
+  touchIndex = (touchIndex + 1) % order.length
+  const anim = order[touchIndex]
+  playInteractAnim(anim, false)
+  // 动画名 → 语音 label：touch_body/touch_head/touch_special 直接对应 VOICE_BASE
+  playVoice(anim)
 }
 
 function layerBounds(l) {
@@ -408,6 +686,136 @@ function applyLayout() {
   renderer.camera.position.x = cam.x
   renderer.camera.position.y = cam.y
   renderer.camera.position.z = 0
+  updateInteractiveOverlay()
+}
+
+// 交互区域（精确部位）：区域数据来自 nagami 参考数据集（游戏 Unity prefab 提取）：
+//   https://data.nagami.moe/spine/models/{asset}.json 的 hitAreas[]——
+//   { name, position[x,y], size[w,h], pivot, rootPosition, rootSize }。
+//   name 即互动名（touch_head/touch_body/touch_special/drag/数字表情），
+//   position+size 是相对骨架 rootPosition/rootSize 的世界坐标框。
+// 同时拉取 skins/{id}.json 的 interaction.drag_data.config_client（官方点击互动规则：
+//   {hit, action, idle, change_idle, is_default}——按当前 idle 匹配规则，播 action
+//   一次后切到 change_idle 循环）。
+// 拉取失败（离线/皮肤不在数据集）时降级为整体拖拽区。
+let remoteInteractRules = [] // config_client 规则（touch 系状态机用）
+const DATASET_BASE = 'https://data.nagami.moe/spine'
+let skinIdCache = null // asset → 官方 id 映射缓存
+
+async function fetchSkinId(asset) {
+  if (skinIdCache) return skinIdCache[asset] || null
+  try {
+    const res = await fetch(`${DATASET_BASE}/index.json`)
+    if (!res.ok) return null
+    const idx = await res.json()
+    skinIdCache = {}
+    for (const s of idx.skins || []) skinIdCache[s.asset] = s.id
+  } catch (e) { return null }
+  return skinIdCache[asset] || null
+}
+
+async function loadHitAreas() {
+  remoteHitAreas = []
+  remoteInteractRules = []
+  const asset = props.skin && props.skin.painting
+  if (!asset) return
+  try {
+    const url = `${DATASET_BASE}/models/${encodeURIComponent(asset)}.json`
+    const res = await fetch(url, { signal: AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined })
+    if (!res.ok) return
+    const data = await res.json()
+    if (Array.isArray(data && data.hitAreas)) remoteHitAreas = data.hitAreas
+    if (remoteHitAreas.length) updateInteractiveOverlay()
+  } catch (e) { /* 离线/无数据：静默降级 */ }
+  // 拉官方点击互动规则（touch_special_normal 等特殊待机循环依赖它）
+  try {
+    const id = await fetchSkinId(asset)
+    if (!id) return
+    const res2 = await fetch(`${DATASET_BASE}/skins/${encodeURIComponent(id)}.json`, { signal: AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined })
+    if (!res2.ok) return
+    const cfg = await res2.json()
+    const cc = cfg && cfg.interaction && cfg.interaction.drag_data && cfg.interaction.drag_data.config_client
+    if (Array.isArray(cc)) {
+      remoteInteractRules = cc.filter((r) => r && typeof r === 'object')
+      updateInteractiveOverlay()
+    }
+  } catch (e) { /* 静默降级 */ }
+}
+
+// 单个 hitArea → 世界框（position 是框中心相对 root 中心；rootPosition/rootSize 是骨架根框）
+function hitWorldBox(h) {
+  const rp = h.rootPosition || [0, 0]
+  const rs = h.rootSize || [1, 1]
+  const pos = h.position || [0, 0]
+  const size = h.size || [0, 0]
+  const pivot = h.pivot || [0.5, 0.5]
+  // root 框的左下角 = rootPosition - rootSize/2（rootPosition 为根框中心）
+  const rootMinX = rp[0] - rs[0] / 2
+  const rootMaxX = rp[0] + rs[0] / 2
+  const rootMaxY = rp[1] + rs[1] / 2
+  // 区域中心相对 root 中心偏移 pos；spine Y 向上
+  const cx = (rootMinX + rootMaxX) / 2 + pos[0]
+  const cy = rootMaxY - rs[1] / 2 + pos[1]
+  const w = size[0], hh = size[1]
+  return { minX: cx - w / 2, maxX: cx + w / 2, minY: cy - hh / 2, maxY: cy + hh / 2 }
+}
+function boxToScreen(box, cw, ch) {
+  const cam = renderer.camera
+  const z = cam.zoom || 1
+  const sx1 = (box.minX - cam.position.x) / z + cw / 2
+  const sx2 = (box.maxX - cam.position.x) / z + cw / 2
+  const sy1 = ch / 2 - (box.maxY - cam.position.y) / z
+  const sy2 = ch / 2 - (box.minY - cam.position.y) / z
+  const left = Math.min(sx1, sx2), top = Math.min(sy1, sy2)
+  return {
+    style: {
+      left: left + 'px',
+      top: top + 'px',
+      width: Math.abs(sx2 - sx1) + 'px',
+      height: Math.abs(sy2 - sy1) + 'px',
+    },
+    world: box,
+  }
+}
+
+function updateInteractiveOverlay() {
+  if (!props.showHitAreas || !props.interactionMode) {
+    hitAreas.value = []
+    return
+  }
+  const canvas = canvasRef.value
+  const cw = canvas.clientWidth
+  const ch = canvas.clientHeight
+  if (!cw || !ch || !renderer) { hitAreas.value = []; return }
+
+  const areas = []
+  const names = animNames()
+  for (const h of remoteHitAreas) {
+    const box = hitWorldBox(h)
+    const labelMap = {
+      touch_head: '摸头', touch_body: '摸身体', touch_special: '特殊',
+      touch_special_2: '特殊②', touch_special_normal: '特殊待机',
+      drag: '拖拽', drag_ex: '拖拽②', ex: '互动', login: '开场',
+    }
+    let label = labelMap[h.name] || ''
+    if (/^\d+$/.test(h.name)) label = '表情' + h.name
+    if (!label) label = h.name
+    areas.push({ label, kind: h.name, ...boxToScreen(box, cw, ch) })
+  }
+  // 数据集无该皮肤时兜底：整体一个"拖拽"框（用角色包围盒）
+  if (!areas.length) {
+    const main = layers.filter((l) => l.skeleton && !isBgLayer(l)).map(layerBounds).filter((b) => Number.isFinite(b.minX))
+    if (main.length) {
+      const box = {
+        minX: Math.min(...main.map((b) => b.minX)),
+        maxX: Math.max(...main.map((b) => b.maxX)),
+        minY: Math.min(...main.map((b) => b.minY)),
+        maxY: Math.max(...main.map((b) => b.maxY)),
+      }
+      areas.push({ label: '拖拽/点击', kind: '__all__', ...boxToScreen(box, cw, ch) })
+    }
+  }
+  hitAreas.value = areas
 }
 
 function isBgLayer(l) {
@@ -462,39 +870,84 @@ function applyCharacterFit() {
   }
 }
 
+let _dc = 0
+let _dbgLast = 0
 function render() {
-  if (disposed || paused) return
-  const now = performance.now() / 1000
-  const delta = Math.min(0.1, now - lastFrame)
-  lastFrame = now
-  const canvas = canvasRef.value
-  if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
-    canvas.width = canvas.clientWidth
-    canvas.height = canvas.clientHeight
-    gl.viewport(0, 0, canvas.width, canvas.height)
-    renderer.camera.setViewport(canvas.width, canvas.height)
-    applyLayout()
+  // 诊断：帧计数 + 互动状态 + 第一个骨架 track0 的动画时间（判断「动画是否还在推进」）
+  let _t = ''
+  const _l0 = layers.find((l) => l.skeleton && l.state)
+  if (_l0) {
+    const _e = _l0.state.getCurrent(0)
+    if (_e && _e.animation) _t = `${_e.animation.name}@${_e.trackTime.toFixed(1)}s${_e.loop ? '(loop)' : ''}`
+    else _t = 'no-anim'
+  } else _t = 'no-skel'
+  dbgText.value = `帧${++_dc} ${interactState} ${_t}${paused ? ' PAUSED' : ''}${disposed ? ' DISPOSED' : ''}`.slice(0, 90)
+  if (disposed || paused) {
+    // 非 disposed 的暂停只是 keep-alive 切走，切回时会恢复 rAF；disposed 直接停
+    if (!disposed && paused) raf = 0
+    return
   }
-  for (const l of layers) {
-    if (!l.skeleton) continue
-    l.state.update(delta)
-    l.state.apply(l.skeleton)
-    l.skeleton.updateWorldTransform()
+  // 防御：渲染帧内任何一步抛错都不能让 rAF 链断掉（否则画面静默定格——用户已遇到过）。
+  // 异常上报给父组件弹错误框，并继续预约下一帧。
+  try {
+    const now = performance.now() / 1000
+    const delta = Math.min(0.1, now - lastFrame)
+    lastFrame = now
+    const canvas = canvasRef.value
+    if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
+      canvas.width = canvas.clientWidth
+      canvas.height = canvas.clientHeight
+      gl.viewport(0, 0, canvas.width, canvas.height)
+      renderer.camera.setViewport(canvas.width, canvas.height)
+      applyLayout()
+    }
+    // 骨骼/动画推进：即使某层异常也只影响该层，不中断整帧
+    for (const l of layers) {
+      if (!l.skeleton) continue
+      try {
+        l.state.update(delta)
+        l.state.apply(l.skeleton)
+        l.skeleton.updateWorldTransform()
+      } catch (e) {
+        console.warn('[spine-render] 层动画异常:', l.name, e)
+      }
+    }
+    clearRenderFrame()
+    // 诊断取证：互动状态每 2s 抓一帧上报后端，判断真实渲染动没动
+    if (interactState !== 'normal') {
+      const _dt0 = performance.now()
+      if (_dt0 - (_dbgLast || 0) > 2000) {
+        _dbgLast = _dt0
+        try {
+          const _url = canvasRef.value.toDataURL('image/png')
+          const _e0 = _l0 && _l0.state && _l0.state.getCurrent(0)
+          fetch((window.API_BASE||'http://127.0.0.1:8766')+'/api/debug-frame',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tag:'spine_'+Math.round(performance.now()),png:_url,state:interactState,anim:_e0&&_e0.animation?_e0.animation.name:'',time:_e0?Math.round(_e0.trackTime*10)/10:-1})}).catch(()=>{})
+        } catch (e) {}
+      }
+    }
+  } catch (e) {
+    console.error('[spine-render] 帧内异常:', e.message || e)
+    if (!disposed) emit('error', '[spine-render] ' + (e.message || String(e)))
   }
+  raf = requestAnimationFrame(render)
+}
+
+// 每帧的实际绘制（独立成函数便于隔离 overlay/背景等辅助逻辑的异常）
+function clearRenderFrame() {
+  try { updateInteractiveOverlay() } catch (e) { console.warn('[spine-render] overlay 异常:', e.message || e) }
   gl.clearColor(0, 0, 0, 0)
   gl.clear(gl.COLOR_BUFFER_BIT)
   renderer.begin()
   // 独立背景图：铺在角色层下面，覆盖整个取景框
   for (const l of layers) {
     if (!l.bg) continue
-    drawBg(l.bg)
+    try { drawBg(l.bg) } catch (e) { console.warn('[spine-render] bg 异常:', e.message || e) }
   }
   for (const l of renderOrder()) {
     if (!l.skeleton) continue
     renderer.drawSkeleton(l.skeleton, true)
   }
   renderer.end()
-  raf = requestAnimationFrame(render)
 }
 
 // 背景图绘制：铺满整个画布可视区域（世界坐标）。
@@ -551,9 +1004,130 @@ function onCanvasWheel(e) {
   emit('scaleChange', Math.round(next))
 }
 
+// 命中检测：点击点（世界坐标）落在哪个 hitArea 世界框内
+function screenToWorld(px, py) {
+  const canvas = canvasRef.value
+  const cw = canvas.clientWidth || 1
+  const ch = canvas.clientHeight || 1
+  const cam = renderer.camera
+  const z = cam.zoom || 1
+  return {
+    x: (px - cw / 2) * z + cam.position.x,
+    y: (ch / 2 - py) * z + cam.position.y,
+  }
+}
+function hitAreaAt(wx, wy) {
+  for (const a of hitAreas.value) {
+    const w = a.world
+    if (!w) continue
+    if (wx >= w.minX && wx <= w.maxX && wy >= w.minY && wy <= w.maxY) return a
+  }
+  return null
+}
+
 function onCanvasDown(e) {
   if (e.button !== 0) return
   e.preventDefault()
+  if (props.interactionMode && isInteractiveSkin()) {
+    // 纯表情皮肤（无 drag/touch/login 动画，如 与阳光一同闪耀）：
+    // 点击任意处循环切换全部表情（1→2→…→无表情→1）
+    const kind0 = interactKind()
+    const hasTouchAnims = ['touch_body', 'touch_head', 'touch_special'].some((t) => hasAnim(t))
+    if (kind0 !== 'drag' && !hasTouchAnims && !hasAnim('login')) {
+      cycleExpression()
+      return
+    }
+    // 精确部位命中：hitArea 世界框（数据来自游戏 prefab 提取的参考数据集）
+    const rect = canvasRef.value.getBoundingClientRect()
+    const wp = screenToWorld(e.clientX - rect.left, e.clientY - rect.top)
+    const area = hitAreaAt(wp.x, wp.y)
+    // ★ drag 皮肤：直接走本地 drag 状态机（drag→ex→drag_ex→normal）。
+    //   官方 config_client 对 drag 皮肤的规则也是 drag→ex / drag_ex→normal，
+    //   但 playRuleAction 只播 action、不驱动完整状态机（complete 后不自动切
+    //   ex/normal），会导致点击后播完 drag 不切 ex、状态机卡死。
+    //   因此 drag 皮肤必须绕过官方规则分支，走本地 startInteractDrag。
+    if (interactKind() === 'drag') {
+      // 命中 drag 区域（或无命中）都触发拖拽状态机；命中非 drag 区域按该动画播一次
+      if (area && area.kind && area.kind !== 'drag' && hasAnim(area.kind)) {
+        playInteractAnim(area.kind, false)
+        playVoice(/^touch/.test(area.kind) ? area.kind : 'touch_body')
+      } else {
+        startInteractDrag()
+        playVoice('touch_body')
+      }
+      canvasRef.value.style.cursor = 'grabbing'
+      return
+    }
+    // 官方规则状态机优先（仅 touch 系走这里；config_client 的 touch 规则：
+    // 按当前 idle 匹配规则 → 播 action → 切 change_idle 循环）
+    if (remoteInteractRules.length) {
+      if (area) {
+        const kindName = area.kind
+        if (/^\d+$/.test(kindName)) {
+          // 数字表情 hit → track1 叠加
+          for (const l of layers) {
+            if (!l.skeleton) continue
+            if (!l.data.animations.some((a) => a.name === kindName)) continue
+            const cur = l.state.getCurrent(0)
+            if (!cur) { const d2 = pickAnim(l.data); if (d2) l.state.setAnimation(0, d2, true) }
+            l.state.setAnimation(1, kindName, false)
+          }
+          canvasRef.value.style.cursor = 'grabbing'
+          return
+        }
+        // hit 名匹配对应规则（hit === action 名，如 touch_head/touch_special）
+        const hitRule = remoteInteractRules.find(
+          (r) => r && typeof r === 'object' && r.hit === kindName && r.action && r.click !== false,
+        )
+        if (hitRule && hasAnim(hitRule.action)) {
+          currentIdle = hitRule.change_idle || 'normal'
+          playInteractAnim(hitRule.action, false)
+          playVoice(/^touch/.test(hitRule.action) ? hitRule.action : 'touch_body')
+          canvasRef.value.style.cursor = 'grabbing'
+          return
+        }
+      }
+      // 无部位命中/无对应规则 → 按当前 idle 匹配官方规则
+      if (playRuleAction()) {
+        canvasRef.value.style.cursor = 'grabbing'
+        return
+      }
+    }
+    // 无官方规则：旧逻辑（drag 系状态机 / touch 系轮换）
+    if (area) {
+      const kindName = area.kind
+      // 数字表情 hit：不固定播该表情，而是循环切换全部表情（点哪都能换）
+      if (/^\d+$/.test(kindName)) {
+        cycleExpression()
+        canvasRef.value.style.cursor = 'grabbing'
+        return
+      }
+      if (kindName === 'drag' && hasAnim('drag')) {
+        startInteractDrag()
+      } else if (hasAnim(kindName)) {
+        playInteractAnim(kindName, false)
+      } else if (interactKind() === 'drag') {
+        startInteractDrag()
+      } else {
+        cycleTouchInteract()
+      }
+      playVoice(/^touch/.test(kindName) ? kindName : 'touch_body')
+      canvasRef.value.style.cursor = 'grabbing'
+      return
+    }
+    // 未命中任何区域：
+    if (interactKind() === 'drag') {
+      startInteractDrag()
+      playVoice('touch_body')
+    } else if (animNames().some((n) => isExpression(n, layers.find((l) => l.skeleton)?.data))) {
+      // 无 drag/touch 但有表情：点击循环切全部表情
+      cycleExpression()
+    } else {
+      cycleTouchInteract()
+    }
+    canvasRef.value.style.cursor = 'grabbing'
+    return
+  }
   drag = {
     x: e.clientX,
     y: e.clientY,
@@ -566,6 +1140,28 @@ function onCanvasDown(e) {
   canvasRef.value.style.cursor = 'grabbing'
 }
 
+// 非互动皮肤：点击循环切换数字表情（duration=0 的 AttachmentTimeline 动画）
+let exprIndex = -1
+function cycleExpression() {
+  const exprs = animNames().filter((n) => isExpression(n, layers.find((l) => l.skeleton)?.data))
+  if (!exprs.length) return
+  exprIndex = (exprIndex + 1) % (exprs.length + 1) // +1 = 循环回"无表情"
+  for (const l of layers) {
+    if (!l.skeleton) continue
+    // 先确保 track0 有动作（表情叠加的前提）
+    const cur = l.state.getCurrent(0)
+    if (!cur) {
+      const def = pickAnim(l.data)
+      if (def) l.state.setAnimation(0, def, true)
+    }
+    if (exprIndex < exprs.length) {
+      l.state.setAnimation(1, exprs[exprIndex], false)
+    } else {
+      l.state.clearTrack(1) // 循环回无表情
+    }
+  }
+}
+
 function enableInteraction() {
   const canvas = canvasRef.value
   canvas.style.cursor = 'grab'
@@ -573,12 +1169,22 @@ function enableInteraction() {
   canvas.addEventListener('mousedown', onCanvasDown)
   window.addEventListener('mousemove', onMove)
   window.addEventListener('mouseup', onUp)
+  // 注册互动动画完成监听：drag → ex，drag_ex → normal
+  for (const l of layers) {
+    if (l.skeleton && l.state) {
+      l.state.addListener({ complete: onInteractComplete })
+    }
+  }
+  loadVoiceStatus()
+  loadHitAreas() // 拉取精确交互区域数据（nagami 数据集，失败静默降级）
 }
 
 function onMove(e) {
   if (!drag) return
   drag.lastX = e.clientX
   drag.lastY = e.clientY
+  // 互动模式：拖动不移动画面（只触发 drag 动画反应）
+  if (props.interactionMode && isInteractiveSkin()) return
   // 像素级直拖：和 Live2D 一样跟手（屏幕坐标 → 世界坐标换算）
   const cam = renderer.camera
   const dx = e.clientX - drag.x
@@ -599,6 +1205,8 @@ function onUp() {
   const oy = Math.round(WL.clampOffset(drag.oy + ((ly - drag.y) / ch) * 100))
   drag = null
   canvas.style.cursor = 'grab'
+  // 互动模式：拖动只触发动画，不平移画面
+  if (props.interactionMode && isInteractiveSkin()) return
   emit('panChange', { x: ox, y: oy })
 }
 
@@ -621,17 +1229,38 @@ onMounted(async () => {
     layers = loaded
     // 骨架层播放动画；背景图层无骨架，跳过
     const skelLayers = loaded.filter((l) => l.skeleton)
-    playAnimation(props.animation || '')
-    // 把动画推进到 t=0，用初始姿态构建稳定的边界缓存
-    for (const l of skelLayers) {
-      l.state.update(0)
-      l.state.apply(l.skeleton)
-      l.skeleton.updateWorldTransform()
+    // 互动皮肤：开场播 login（一次）→ 播完自动切 normal 循环；无 login 则直接
+    // normal 待机。上层页面切皮肤时 animation 默认为 'normal'，走开场逻辑；
+    // 显式选了其他动画则直接播放。
+    // 关键顺序：必须先用 normal 待机姿态构建取景缓存（computeBounds/适配），
+    // 再切入 login——login 的 t=0 姿态含巨大转场件会让取景框算得巨大、相机
+    // 拉远导致画面比例完全错位（手动切换正常正是因为那时取景已按 normal 缓存）。
+    const defaultIdle = !props.animation || /^(normal|idle)$/i.test(props.animation)
+    if (isInteractiveSkin() && defaultIdle) {
+      // 1) 以 normal 待机姿态建立稳定的边界缓存与人物适配
+      playInteractAnim('normal', true)
+      for (const l of skelLayers) {
+        l.state.update(0)
+        l.state.apply(l.skeleton)
+        l.skeleton.updateWorldTransform()
+      }
+      applyCharacterFit()
+      computeBounds()
+      // 2) 再切入 login 开场（不重算取景，沿用 normal 的框）；
+      //    intro 关闭时跳过 login，保持 normal 待机
+      if (hasAnim('login') && props.intro) {
+        playInteractAnim('login', false)
+      }
+    } else {
+      playAnimation(props.animation || '')
+      for (const l of skelLayers) {
+        l.state.update(0)
+        l.state.apply(l.skeleton)
+        l.skeleton.updateWorldTransform()
+      }
+      applyCharacterFit()
+      computeBounds()
     }
-    // 风景型皮肤：人物远大于背景时等比缩小到背景内（如 月下起舞），
-    // 之后 computeBounds 以背景为取景框即可同时容纳人物与背景
-    applyCharacterFit()
-    computeBounds()
     const anims = [...new Set(skelLayers.flatMap((l) => l.data.animations.map((a) => a.name)))]
     emit('animations', anims)
     applyLayout()
@@ -690,6 +1319,11 @@ defineExpose({
 </script>
 
 <style scoped>
+.spine-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
 .spine-canvas {
   width: 100%;
   height: 100%;
@@ -697,4 +1331,34 @@ defineExpose({
   touch-action: none;
   user-select: none;
 }
+.spine-hit-overlay {
+  position: absolute;
+  border: 2px dashed rgba(74, 111, 165, 0.65);
+  background: rgba(74, 111, 165, 0.08);
+  border-radius: 8px;
+  color: #4a6fa5;
+  font-size: 11px;
+  font-weight: 600;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 4px;
+  pointer-events: none;
+  box-sizing: border-box;
+  text-shadow: 0 1px 3px rgba(255, 255, 255, 0.7);
+}
+.spine-dbg {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  z-index: 5;
+  background: rgba(10, 14, 20, 0.75);
+  color: #9fe09f;
+  font: 10px/1.4 ui-monospace, Consolas, monospace;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.spine-dbg.hidden { display: none; }
 </style>

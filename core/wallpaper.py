@@ -100,6 +100,8 @@ def project_json(
     voice: bool = True,
     intro: bool = True,
     interact: bool = True,
+    track: bool = True,
+    spine: bool = False,
 ) -> dict:
     # 语义与预览一致：scale 为百分比（100 = 自适应），偏移为画布宽/高百分比
     scale_ctl = int(_clamp(scale, 20, 300))
@@ -136,8 +138,21 @@ def project_json(
         "offsetx": slider("水平偏移", ox, -100, 100, 101, 1),
         "offsety": slider("垂直偏移", oy, -100, 100, 102, 2),
         "alignment": {
-            "text": "对齐方式", "type": "combo", "value": alignment,
-            "options": ALIGN_LABELS,
+            "text": "对齐方式", "type": "combo",
+            # WE combo 标准格式：value 是选中项的字符串值，options 是 {label,value} 对象数组。
+            # 旧格式（整数索引 + 字符串数组）会导致该属性在 WE 侧边栏不显示。
+            "value": (
+                ALIGN_NAMES[alignment]
+                if isinstance(alignment, int) and 0 <= alignment < len(ALIGN_NAMES)
+                else str(alignment or "center")
+            ),
+            "options": [
+                {"label": label, "value": name}
+                for name, label in zip(ALIGN_NAMES, ALIGN_LABELS)
+            ],
+            # editable 必须为 true：WE 属性面板只显示 editable 的属性，
+            # 漏掉该字段会导致「对齐方式」在 WE 控件里不显示
+            "editable": True,
             "index": 0,
             "order": 100,
         },
@@ -149,21 +164,41 @@ def project_json(
         except ValueError:
             anim_idx = 0
         properties["animselect"] = {
-            "text": "动画切换", "type": "combo", "value": anim_idx,
+            "text": "动画切换", "type": "combo",
+            "value": anims[anim_idx],
             "options": [
                 {"label": a.replace("_", " "), "value": a}
                 for a in anims
             ],
+            "editable": True,
             "index": 4,
             "order": 104,
         }
 
     # Live2D 专属面板开关：语音（互动语音开/关）、开场动画（login 播一次再回 idle）、
-    # 互动（点击/拖拽等交互是否生效）
+    # 互动（点击/拖拽等交互是否生效）、鼠标追踪（视线/头部跟随鼠标）。
+    # 任一开关在导出时关闭 → 不生成对应属性：WE 右侧面板不出现该控件，壁纸也不带该功能
+    #（如开场动画关闭则固定只播 idle、语音关闭则无语音文件与控件）。
     if l2d:
-        properties["voice"] = bool_ctl("语音", voice, 105, 5)
-        properties["playintro"] = bool_ctl("开场动画", intro, 106, 6)
-        properties["interact"] = bool_ctl("互动", interact, 107, 7)
+        if voice:
+            properties["voice"] = bool_ctl("语音", True, 105, 5)
+        if intro:
+            properties["playintro"] = bool_ctl("开场动画", True, 106, 6)
+        if interact:
+            properties["interact"] = bool_ctl("互动", True, 107, 7)
+        if track:
+            properties["mousetrack"] = bool_ctl("鼠标追踪", True, 108, 8)
+
+    # Spine 互动皮肤专属开关：互动语音/互动（与 L2D 同款）。
+    # 开场动画（playintro）仅皮肤有 login 动画时生成（导出器自动检测 has_login）。
+    # 导出时关闭的功能不生成对应属性（WE 面板不出现、壁纸不带该功能）。
+    if spine:
+        if voice:
+            properties["voice"] = bool_ctl("语音", voice, 105, 5)
+        if intro:
+            properties["playintro"] = bool_ctl("开场动画", intro, 106, 6)
+        if interact:
+            properties["interact"] = bool_ctl("互动", interact, 107, 7)
 
     return {
         "file": "index.html",

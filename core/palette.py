@@ -38,13 +38,22 @@ def find_palette_source(skin: dict, root) -> Path | None:
 
 
 def extract_palette(png_path, num_colors: int = 4) -> list[str] | None:
-    """从立绘 PNG 提取主色调。图片损坏/无法解码时返回 None（调用方自行降级）。"""
+    """从立绘 PNG 提取主色调。图片损坏/无法解码时返回 None（调用方自行降级）。
+
+    采样策略（v2）：按像素频率取色会被大面积的皮肤/灰白/浅色区域主导，
+    导致调色板灰蒙蒙、特征色（发色/服装主色）被挤出。改进：
+      - 肤色过滤：亮暖色（r>g>b 且 r>160、低饱和）视为皮肤，直接排除
+        （带亮度条件避免误杀棕色头发）；
+      - 中心加权：角色主体通常在画面中心，中心像素权重更高；
+      - 饱和度加权：特征色通常比背景/皮肤更饱和，权重随饱和度提升；
+      - 纯白过滤阈值 245（原 235），更严格地排除大面积白色区域。
+    """
     try:
         img = Image.open(png_path).convert("RGBA")
         w, h = img.size
         step = max(1, (w * h) // 80000)
         px = img.load()
-        buckets: dict[tuple[int, int, int], list[int]] = {}
+        buckets: dict[tuple[int, int, int], list[float]] = {}
 
         for y in range(0, h, step):
             for x in range(0, w, step):
@@ -54,19 +63,30 @@ def extract_palette(png_path, num_colors: int = 4) -> list[str] | None:
                 mx, mn = max(r, g, b), min(r, g, b)
                 if mx < 25:  # 纯黑
                     continue
-                if mn > 235:  # 纯白
+                if mn > 245:  # 纯白（严格）
                     continue
                 if mx - mn < 12 and (mx < 50 or mn > 200):  # 极灰描边
                     continue
+                sat = (mx - mn) / 255.0
+                # 肤色过滤：亮暖色低饱和（大面积皮肤挤占调色板）
+                if r > g > b and r > 160 and (r - b) > 60 and sat < 0.4:
+                    continue
+                # 中心加权：角色主体通常在画面中心
+                cx = (x + 0.5) / w - 0.5
+                cy = (y + 0.5) / h - 0.5
+                center_w = max(0.0, 1.0 - 2.2 * (cx * cx + cy * cy)) ** 0.5
+                # 饱和度加权：特征色（发色/服装）通常比背景/皮肤更饱和
+                sat_w = 0.4 + sat * 2.0
+                wt = (0.4 + center_w) * sat_w
                 key = (r >> 4, g >> 4, b >> 4)
                 bkt = buckets.get(key)
                 if bkt is None:
-                    buckets[key] = [r, g, b, 1]
+                    buckets[key] = [r * wt, g * wt, b * wt, wt]
                 else:
-                    bkt[0] += r
-                    bkt[1] += g
-                    bkt[2] += b
-                    bkt[3] += 1
+                    bkt[0] += r * wt
+                    bkt[1] += g * wt
+                    bkt[2] += b * wt
+                    bkt[3] += wt
 
         total = sum(v[3] for v in buckets.values())
         if total < 20:
@@ -75,8 +95,8 @@ def extract_palette(png_path, num_colors: int = 4) -> list[str] | None:
         entries = sorted(buckets.items(), key=lambda kv: kv[1][3], reverse=True)
 
         def avg(kv) -> tuple[int, int, int]:
-            _, (sr, sg, sb, cnt) = kv
-            return sr // cnt, sg // cnt, sb // cnt
+            _, (sr, sg, sb, wt) = kv
+            return int(sr / wt), int(sg / wt), int(sb / wt)
 
         def manhattan(c1, c2) -> int:
             return abs(c1[0] - c2[0]) + abs(c1[1] - c2[1]) + abs(c1[2] - c2[2])
@@ -160,8 +180,10 @@ def mode_css(mode: str, palette: list[str] | None, solid_color: str | None = Non
     if mode == "solid":
         return f"background: {solid_color or c0};"
     if mode == "gradient":
-        return _linear(palette, 135)
+        # 兼容旧配置：渐变/莫奈已合并为「莫奈渐变」（前端不再提供 gradient 选项）
+        mode = "monet"
     if mode == "monet":
+        # 莫奈渐变：多层柔和径向光斑叠加深色线性渐变（160°）
         return (
             "background: "
             f"radial-gradient(60% 70% at 20% 25%, {_rgba(c0, 0.35)}, transparent 60%),"

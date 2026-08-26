@@ -18,6 +18,10 @@ from core.applog import setup_logging
 from web_backend import WebApi
 
 DEV_URL = "http://127.0.0.1:5173"
+# 开发模式下后端由 scripts/start_dev.py 以独立进程启动（默认 8766），
+# 窗口关闭时通过该端口通知后端做退出清理（尽力而为，失败静默）。
+BACKEND_PORT = int(os.environ.get("AZL_BACKEND_PORT", "8766"))
+CLEANUP_URL = f"http://127.0.0.1:{BACKEND_PORT}/api/library/cleanup-bundles"
 APP_DATA = Path(os.environ.get("APPDATA", str(Path.home()))) / "azurlane-dynamic-wallpaper"
 PREFS_FILE = APP_DATA / "prefs.json"
 WEBVIEW_DATA = APP_DATA / "webview"
@@ -54,6 +58,23 @@ def centered_position(width: int, height: int) -> tuple[int | None, int | None]:
         return max(0, (sw - width) // 2), max(0, (sh - height) // 2)
     except Exception:  # noqa: BLE001
         return None, None
+
+
+def notify_backend_cleanup() -> None:
+    """通知后端清理「已提取完成」皮肤的下载包（设置关闭时后端会自行跳过）。"""
+    import urllib.request
+
+    try:
+        req = urllib.request.Request(
+            CLEANUP_URL,
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=3) as r:
+            r.read()
+    except Exception:  # noqa: BLE001
+        pass  # 尽力而为：后端未启动/已退出时静默
 
 
 def main() -> None:
@@ -126,6 +147,7 @@ def main() -> None:
         if save_timer:
             save_timer.cancel()
         persist(lambda p: p.update(last_size))
+        notify_backend_cleanup()
 
     window.events.resized += on_resized
     window.events.maximized += on_maximized

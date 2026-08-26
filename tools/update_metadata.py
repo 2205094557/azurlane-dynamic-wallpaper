@@ -118,7 +118,14 @@ def cdn_paintings() -> set[str]:
 
 def is_skin(name: str) -> bool:
     low = name.lower()
-    if not low or low.startswith(("npc", "boss")):
+    if not low:
+        return False
+    _TOOLS_DIR = Path(__file__).resolve().parent
+    if str(_TOOLS_DIR) not in sys.path:
+        sys.path.insert(0, str(_TOOLS_DIR))
+    from npc_filter import is_npc_painting  # noqa: E402
+
+    if is_npc_painting(low):
         return False
     if any(m in low for m in VARIANT_MARKERS):
         return False

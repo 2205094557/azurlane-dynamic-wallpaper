@@ -42,10 +42,14 @@
                 :offset-x="offsetX"
                 :offset-y="offsetY"
                 :alignment="alignment"
+                :interaction-mode="interactionMode"
+                :show-hit-areas="showHitAreas"
+                :intro="introOn"
                 @animations="onSpineAnims"
                 @error="onEngineError"
                 @scale-change="scale = $event"
                 @pan-change="offsetX = $event.x; offsetY = $event.y"
+                @subtitle="l2dSubtitle = $event"
               />
               <Live2DPreview
                 v-else-if="currentSkin.type === 'live2d' && currentSkin.asset"
@@ -58,6 +62,7 @@
                 :alignment="alignment"
                 :interaction-mode="interactionMode"
                 :show-hit-areas="showHitAreas"
+                :intro="introOn"
                 @animations="onSpineAnims"
                 @error="onEngineError"
                 @scale-change="scale = $event"
@@ -120,23 +125,29 @@
             <div class="panel-title">缩放</div>
             <n-slider v-model:value="scale" :min="20" :max="300" :step="5" />
 
-            <div v-if="currentSkin.type === 'live2d'" class="panel-title">交互模式</div>
-            <div v-if="currentSkin.type === 'live2d'" class="mode-toggle">
+            <div v-if="currentSkin.type === 'live2d' || currentSkin.type === 'spine'" class="panel-title">交互模式</div>
+            <div v-if="currentSkin.type === 'live2d' || currentSkin.type === 'spine'" class="mode-toggle">
               <span class="mode-pill" :class="{ active: !interactionMode }" @click="interactionMode = false">拖拽</span>
               <span class="mode-pill" :class="{ active: interactionMode }" @click="interactionMode = true">互动</span>
               <span class="mode-pill" :class="{ active: voiceEnabled }" :title="voiceEnabled ? '关闭互动语音与台词' : '开启互动语音与台词'" @click="toggleVoice">
                 {{ voiceEnabled ? '🔊 语音' : '🔇 语音' }}
               </span>
             </div>
-            <div v-if="currentSkin.type === 'live2d'" class="l2d-subtitle-box" :class="{ empty: !l2dSubtitle }">
+            <div v-if="currentSkin.type === 'live2d' || currentSkin.type === 'spine'" class="l2d-subtitle-box" :class="{ empty: !l2dSubtitle }">
               {{ l2dSubtitle || '点击角色互动，台词显示在这里' }}
             </div>
-            <div v-if="currentSkin.type === 'live2d'" class="mode-toggle" style="margin-top: 6px">
+            <div v-if="currentSkin.type === 'live2d' || currentSkin.type === 'spine'" class="mode-toggle" style="margin-top: 6px">
               <span
                 class="mode-pill"
                 :class="{ active: showHitAreas }"
                 @click="showHitAreas = !showHitAreas"
               >显示交互区域</span>
+              <span
+                class="mode-pill"
+                :class="{ active: introOn }"
+                :title="introOn ? '关闭开场动画' : '开启开场动画'"
+                @click="introOn = !introOn"
+              >{{ introOn ? '🎬 开场' : '🎬 开场关' }}</span>
             </div>
 
             <div class="panel-title">多骨架分层</div>
@@ -263,6 +274,7 @@ const layersVisible = ref(true)
 const interactionMode = ref(false)
 const l2dSubtitle = ref('')
 const showHitAreas = ref(false)
+const introOn = ref(true)
 const stageWrapRef = ref(null)
 const stageRef = ref(null)
 let stageRO = null
@@ -289,8 +301,7 @@ function fitStage() {
 const bgOptions = [
   { label: '自动取色', value: 'auto' },
   { label: '纯色', value: 'solid' },
-  { label: '渐变', value: 'gradient' },
-  { label: '莫奈', value: 'monet' },
+  { label: '莫奈渐变', value: 'monet' },
   { label: '毛玻璃', value: 'frost' },
   { label: '星空', value: 'star' },
 ]
@@ -430,6 +441,11 @@ async function doExport() {
       alignment: alignment.value,
       animation: animation.value,
       animations: exportAnimations(),
+      // 预览页当前开关状态 → WE 侧默认值（编辑导入会覆盖，但一键应用保留）
+      voice: voiceEnabled.value,
+      intro: introOn.value,
+      interact: true,
+      showHitAreas: showHitAreas.value,
     })
   } catch (e) {
     exportResult.value = { ok: false, error: e.message || '导出失败' }
@@ -455,6 +471,11 @@ async function doApply() {
       alignment: alignment.value,
       animation: animation.value,
       animations: exportAnimations(),
+      // 预览页当前开关状态 → WE 侧默认值（一键应用保留，不会被编辑导入历史值覆盖）
+      voice: voiceEnabled.value,
+      intro: introOn.value,
+      interact: true,
+      showHitAreas: showHitAreas.value,
     })
   } catch (e) {
     applyResult.value = { ok: false, error: e.message || '导出并应用失败' }

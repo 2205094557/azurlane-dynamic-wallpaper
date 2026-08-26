@@ -114,10 +114,17 @@ def main():
             "no": str(gid),
         }
 
-    # ships.json（官方命名，按名去重，前后一致）
+    # ships.json（官方命名，按名去重，前后一致；过滤 NPC/敌方/剧情角色）
+    _TOOLS_DIR = Path(__file__).resolve().parent
+    if str(_TOOLS_DIR) not in sys.path:
+        sys.path.insert(0, str(_TOOLS_DIR))
+    from npc_filter import is_npc_painting, is_npc_ship  # noqa: E402
+
     seen = set()
     ships = []
     for s in sorted(ship_by_group.values(), key=lambda x: x["name"]):
+        if is_npc_ship(s["name"]):
+            continue
         if s["name"] in seen:
             continue
         seen.add(s["name"])
@@ -142,7 +149,7 @@ def main():
         for v in gs:
             # CDN 资源名统一小写，官方表里有 U47_2 之类大写名，必须归一化否则下载匹配不到
             painting = v.get("painting", "").lower()
-            if painting.startswith("npc"):
+            if is_npc_painting(painting) or is_npc_ship(ship["name"]):
                 continue
             # 官方表存在同 painting 多行（同一皮肤多 ID / 多 ship_group），只保留第一条
             key = (ship["name"], painting)

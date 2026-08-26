@@ -12,7 +12,7 @@
 (function (root) {
   'use strict'
 
-  var MARGIN = 0.9 // 模型包围盒最多占画布 90%
+  var MARGIN = 0.98 // 模型包围盒最多占画布 98%（撑满预览框，参照 azurlane.nagami.moe）
   var MIN_SCALE = 20
   var MAX_SCALE = 300
   var MAX_OFFSET = 100
@@ -62,7 +62,10 @@
     var h = Math.max(1e-3, bounds.maxY - bounds.minY)
     var cx = (bounds.maxX + bounds.minX) / 2
     var cy = (bounds.maxY + bounds.minY) / 2
-    var fitZoom = Math.max(w / (canvasW * MARGIN), h / (canvasH * MARGIN))
+    // 统一缩放基准：scale=100 时按高度铺满到 MARGIN（所有皮肤高度一致），
+    // 宽度自然留白（横场景留宽、竖场景留高）。此前用 max(宽,高) 约束导致
+    // 不同皮肤分别按宽/高贴满，scale=100 视觉大小不一致。
+    var fitZoom = h / (canvasH * MARGIN)
     var zoom = Math.max(1e-6, fitZoom / scale)
     var slackW = canvasW * zoom - w
     var slackH = canvasH * zoom - h
@@ -211,8 +214,11 @@
       var pt = clientPoint(e)
       var dx = pt.x - down.x
       var dy = pt.y - down.y
+      // 仍标记“已拖动”防止松手被当作点按；但 dragEnabled=false（导出壁纸只保留
+      // 摸头/摸身体/特殊三部位点按）时拖拽不触发任何 drag 动画
       if (!down.dragged && Math.sqrt(dx * dx + dy * dy) > L2D_DRAG_THRESHOLD) {
         down.dragged = true
+        if (opts.dragEnabled === false) return
         var label = null
         if (down.label && /^touch_drag/i.test(down.label)) label = down.label
         if (!label) {
@@ -223,6 +229,13 @@
       }
     }
 
+    // 点按互动只保留三个固定部位：摸头 / 摸身体 / 特殊。
+    // 命中 touch_idleN（待机区）或 touch_dragN 时点按不播动作（待机点击不再互动）；
+    // 拖拽（onPointerMove 超过阈值）仍走 touch_dragN，不在此过滤范围内。
+    function isTapLabel(label) {
+      return /^touch_(head|body|special)$/i.test(label || '')
+    }
+
     function onPointerUp(e) {
       if (!enabled || !down) return
       var d = down
@@ -231,7 +244,8 @@
         // 松手后保持拖拽动画继续播放（不自动恢复），由下一次点击/拖动切换
         return
       }
-      if (d.label && opts.play) opts.play(d.label, false)
+      // 点击待机区（touch_idleN）不互动；只播三个固定部位的触摸动作
+      if (d.label && isTapLabel(d.label) && opts.play) opts.play(d.label, false)
     }
 
     function onPointerCancel() {

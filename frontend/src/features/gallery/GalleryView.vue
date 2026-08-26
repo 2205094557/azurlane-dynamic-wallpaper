@@ -42,7 +42,7 @@
           </div>
           <button class="wc-btn clear-filter-btn" @click="clearFilters">清空筛选</button>
         </div>
-        <div class="rail-list">
+        <div ref="railListRef" class="rail-list">
           <template v-if="skinMode">
             <div
               v-for="item in filteredSkins"
@@ -108,10 +108,15 @@
               :offset-x="offsetX"
               :offset-y="offsetY"
               :alignment="alignment"
+              :interaction-mode="interactionMode"
+              :mouse-track="mouseTrackOn"
+              :show-hit-areas="showHitAreas"
+              :intro="introOn"
               @animations="onSpineAnims"
               @error="onEngineError"
               @scale-change="scale = $event"
               @pan-change="offsetX = $event.x; offsetY = $event.y"
+              @subtitle="l2dSubtitle = $event"
             />
             <Live2DPreview
               v-else-if="currentSkin && currentSkin.type === 'live2d' && currentSkin.asset"
@@ -125,6 +130,8 @@
               :alignment="alignment"
               :interaction-mode="interactionMode"
               :show-hit-areas="showHitAreas"
+              :intro="introOn"
+              :mouse-track="mouseTrackOn"
               @animations="onSpineAnims"
               @error="onEngineError"
               @scale-change="scale = $event"
@@ -153,7 +160,7 @@
               <span class="stage-info-name">{{ selectedShip.name }}</span>
               <span class="stage-info-skin">{{ currentSkin.name }}</span>
             </div>
-            <div v-if="currentSkin && currentSkin.type === 'live2d'" class="l2d-panel-a" :class="{ collapsed: l2dPanelCollapsed }">
+            <div v-if="currentSkin && (currentSkin.type === 'live2d' || currentSkin.type === 'spine')" class="l2d-panel-a" :class="{ collapsed: l2dPanelCollapsed }">
               <div class="l2d-panel-a-head">
                 <span class="l2d-panel-a-title"><span class="l2d-panel-a-dot"></span>互动控制</span>
                 <button class="l2d-panel-a-collapse" :title="l2dPanelCollapsed ? '展开互动面板' : '收起互动面板'" @click="l2dPanelCollapsed = !l2dPanelCollapsed">
@@ -172,6 +179,12 @@
                     互动
                   </button>
                 </div>
+                <div v-if="currentSkin.type === 'spine'" class="l2d-switch-row">
+                  <div class="l2d-switch-txt" style="width:100%">
+                    <small v-if="spineInteractive" style="color:#4a6fa5">✓ 该皮肤支持拖拽互动：拖动角色播放 drag 反应动画</small>
+                    <small v-else style="opacity:.75">该皮肤无拖拽动画，互动模式下点击可切换表情</small>
+                  </div>
+                </div>
                 <div class="l2d-switch-row">
                   <span class="l2d-switch-ico" :class="{ on: voiceEnabled }">
                     <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>
@@ -179,12 +192,30 @@
                   <div class="l2d-switch-txt">互动语音<small>点击角色时播放台词</small></div>
                   <span class="l2d-switch" :class="{ on: voiceEnabled }" :title="voiceEnabled ? '关闭互动语音与台词' : '开启互动语音与台词'" @click="toggleVoice"></span>
                 </div>
-                <div class="l2d-switch-row">
+                <div v-if="currentSkin.type === 'live2d' || currentSkin.type === 'spine'" class="l2d-switch-row">
                   <span class="l2d-switch-ico" :class="{ on: showHitAreas }">
                     <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>
                   </span>
                   <div class="l2d-switch-txt">交互区域<small>显示点击可触发区域</small></div>
                   <span class="l2d-switch" :class="{ on: showHitAreas }" :title="showHitAreas ? '隐藏交互区域' : '显示交互区域'" @click="showHitAreas = !showHitAreas"></span>
+                </div>
+                <div v-if="currentSkin.type === 'live2d'" class="l2d-switch-row">
+                  <span class="l2d-switch-ico" :class="{ on: mouseTrackOn }">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4l6 15 2.2-6.8L20 10 5 4z"/></svg>
+                  </span>
+                  <div class="l2d-switch-txt">鼠标追踪<small>角色视线跟随鼠标（导出壁纸同步）</small></div>
+                  <span class="l2d-switch" :class="{ on: mouseTrackOn }" :title="mouseTrackOn ? '关闭鼠标追踪' : '开启鼠标追踪'" @click="mouseTrackOn = !mouseTrackOn"></span>
+                </div>
+                <div v-if="currentSkin.type === 'live2d' || (currentSkin.type === 'spine' && spineHasLogin)" class="l2d-switch-row">
+                  <span class="l2d-switch-ico" :class="{ on: introOn }">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4v16l13-8-13-8z"/></svg>
+                  </span>
+                  <div class="l2d-switch-txt">
+                    开场动画
+                    <small v-if="currentSkin.type === 'spine'">login 入场播一次再回待机</small>
+                    <small v-else>登录动作播一次再回待机（导出壁纸同步）</small>
+                  </div>
+                  <span class="l2d-switch" :class="{ on: introOn }" :title="introOn ? '关闭开场动画' : '开启开场动画'" @click="introOn = !introOn"></span>
                 </div>
                 <div class="l2d-subtitle-a" :class="{ empty: !l2dSubtitle }">
                   <span v-if="l2dSubtitle" class="l2d-subtitle-a-who">{{ selectedShip ? selectedShip.name : '' }} · {{ currentSkin ? currentSkin.name : '' }}</span>
@@ -296,29 +327,6 @@
         </div>
 
         <div class="panel-card">
-          <div class="panel-title">布局</div>
-          <div class="panel-field">
-            <label>缩放 <span class="bar-dim">{{ scale }}%</span></label>
-            <n-slider v-model:value="scale" :min="20" :max="300" :step="5" />
-          </div>
-          <div class="panel-field">
-            <label>对齐方式</label>
-            <n-select
-              v-model:value="alignment"
-              :options="[
-                { label: '居中', value: 'center' },
-                { label: '左上', value: 'left-top' },
-                { label: '右上', value: 'right-top' },
-                { label: '左下', value: 'left-bottom' },
-                { label: '右下', value: 'right-bottom' },
-              ]"
-              size="small"
-              style="width: 100%"
-            />
-          </div>
-        </div>
-
-        <div class="panel-card">
           <div class="panel-title">导出</div>
           <template v-if="currentSkin">
             <div class="panel-field" v-if="currentSkin.type !== 'static'">
@@ -335,12 +343,57 @@
             </div>
             <div class="panel-field">
               <label>水平偏移（占画布宽 %）</label>
-              <n-slider v-model:value="offsetX" :min="-100" :max="100" :step="1" />
+              <div class="offset-row">
+                <n-slider v-model:value="offsetX" :min="-100" :max="100" :step="1" />
+                <span class="bar-value" :class="{ zero: offsetX === 0 }">{{ offsetX > 0 ? '+' : '' }}{{ offsetX }}</span>
+              </div>
             </div>
             <div class="panel-field">
               <label>垂直偏移（占画布高 %）</label>
-              <n-slider v-model:value="offsetY" :min="-100" :max="100" :step="1" />
+              <div class="offset-row">
+                <n-slider v-model:value="offsetY" :min="-100" :max="100" :step="1" />
+                <span class="bar-value" :class="{ zero: offsetY === 0 }">{{ offsetY > 0 ? '+' : '' }}{{ offsetY }}</span>
+              </div>
             </div>
+            <div class="panel-field">
+              <label>缩放 <span class="bar-dim">{{ scale }}%</span></label>
+              <n-slider v-model:value="scale" :min="20" :max="300" :step="5" />
+            </div>
+            <div class="panel-field">
+              <label>对齐方式</label>
+              <n-select
+                v-model:value="alignment"
+                :options="[
+                  { label: '居中', value: 'center' },
+                  { label: '左上', value: 'left-top' },
+                  { label: '右上', value: 'right-top' },
+                  { label: '左下', value: 'left-bottom' },
+                  { label: '右下', value: 'right-bottom' },
+                ]"
+                size="small"
+                style="width: 100%"
+              />
+            </div>
+            <div class="panel-field">
+              <button class="wc-btn preset-import-btn" @click="openPresetImport">📥 导入 WE 预设 JSON</button>
+            </div>
+            <n-modal v-model:show="presetImportOpen" preset="card" title="导入 Wallpaper Engine 预设" style="width: 520px; max-width: 92vw">
+              <p class="dim" style="margin-bottom: 10px">
+                在 Wallpaper Engine 属性面板点「分享预设」复制内容（JSON 或 Base64 均可），
+                粘贴到下面，即可把 缩放 / 偏移 / 对齐 / 语音 / 鼠标追踪 / 开场动画 应用到当前预览。
+              </p>
+              <n-input
+                v-model:value="presetImportText"
+                type="textarea"
+                :rows="8"
+                placeholder='{"scalectrl": 244, "offsetx": 8, "offsety": 4, "alignment": "center", "voice": true, "mousetrack": true, "playintro": true}'
+                style="font-family: var(--font-mono, Consolas, monospace); font-size: 12px"
+              />
+              <div class="preset-modal-actions">
+                <n-button size="small" @click="presetImportOpen = false">取消</n-button>
+                <n-button size="small" type="primary" @click="applyWePreset">应用</n-button>
+              </div>
+            </n-modal>
             <div class="export-actions">
               <button
                 v-if="currentSkin.asset"
@@ -437,9 +490,9 @@
 </template>
 
 <script setup>
-import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NButton, NInput, NSelect, NSlider, NAlert } from 'naive-ui'
+import { NButton, NInput, NModal, NSelect, NSlider, NAlert } from 'naive-ui'
 import { assetUrl, bridge, metadataUrl, sseUrl } from '../../bridge'
 import { playChime, warmAudio } from '../../utils/sound'
 import { voiceEnabled, toggleVoice } from '../../utils/voice'
@@ -453,6 +506,7 @@ const router = useRouter()
 const ships = ref([])
 const loading = ref(true)
 const selectedId = ref(null)
+const railListRef = ref(null)
 const currentSkinIndex = ref(0)
 const fullscreen = ref(false)
 const exporting = ref(false)
@@ -542,16 +596,106 @@ const scale = ref(100)
 const offsetX = ref(0)
 const offsetY = ref(0)
 const alignment = ref('center')
+// L2D 导出选项：开场动画（login 播一次再回 idle）。关闭后壁纸只播 idle，
+// 且 Wallpaper Engine 属性面板不再出现「开场动画」开关。
+const introOn = ref(true)
+// L2D 鼠标追踪：角色视线/头部跟随鼠标。预览实时生效，导出壁纸联动
+//（WE 面板「鼠标追踪」开关默认值跟随此选项）。
+const mouseTrackOn = ref(true)
+// WE 预设导入：粘贴 Wallpaper Engine「分享 JSON」的预设，应用到预览布局与开关
+const presetImportOpen = ref(false)
+const presetImportText = ref('')
+const ALIGN_VALUES = ['center', 'left-top', 'right-top', 'left-bottom', 'right-bottom']
+
+function openPresetImport() {
+  presetImportText.value = ''
+  presetImportOpen.value = true
+}
+
+// 解析 WE 分享预设 JSON 并应用到预览（scalectrl/offsetx/offsety/alignment/开关）。
+// 兼容两种格式：明文 JSON，或 WE「分享预设」的 Base64 编码（UTF-8）。
+function applyWePreset() {
+  let data
+  const raw = (presetImportText.value || '').trim()
+  try {
+    data = JSON.parse(raw)
+  } catch (e) {
+    // 明文 JSON 解析失败 → 尝试 Base64 解码（WE 分享预设可切换 Base64 格式）
+    try {
+      const bin = atob(raw.replace(/\s+/g, ''))
+      const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0))
+      data = JSON.parse(new TextDecoder().decode(bytes))
+    } catch (e2) {
+      showMsg('无法解析：既不是 JSON，也不是 Base64 编码的 JSON')
+      return
+    }
+  }
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+    showMsg('JSON 必须是对象格式')
+    return
+  }
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
+  const num = (v) => {
+    const n = parseFloat(v)
+    return Number.isFinite(n) ? n : null
+  }
+  let applied = 0
+  const sc = num(data.scalectrl)
+  if (sc !== null) { scale.value = Math.round(clamp(sc, 20, 300)); applied++ }
+  const ox = num(data.offsetx)
+  if (ox !== null) { offsetX.value = Math.round(clamp(ox, -100, 100)); applied++ }
+  const oy = num(data.offsety)
+  if (oy !== null) { offsetY.value = Math.round(clamp(oy, -100, 100)); applied++ }
+  // alignment 兼容 WE 的两种格式：数字下标（旧）或字符串对齐名（新）
+  if (data.alignment !== undefined && data.alignment !== null) {
+    const a = data.alignment
+    const name = typeof a === 'number'
+      ? (ALIGN_VALUES[a] || null)
+      : (typeof a === 'string' && ALIGN_VALUES.includes(a) ? a : null)
+    if (name) { alignment.value = name; applied++ }
+  }
+  if (typeof data.mousetrack === 'boolean') { mouseTrackOn.value = data.mousetrack; applied++ }
+  if (typeof data.playintro === 'boolean') { introOn.value = data.playintro; applied++ }
+  if (typeof data.voice === 'boolean') {
+    voiceEnabled.value = data.voice
+    localStorage.setItem('azl_voice_play', data.voice ? '1' : '0')
+    applied++
+  }
+  if (applied) {
+    showMsg(`已应用 ${applied} 项 WE 预设`)
+    presetImportOpen.value = false
+  } else {
+    showMsg('未识别到可应用属性（scalectrl / offsetx / offsety / alignment / voice / mousetrack / playintro）')
+  }
+}
 const interactionMode = ref(false)
 const l2dSubtitle = ref('')
 const l2dPanelCollapsed = ref(false)
 const showHitAreas = ref(false)
+// 支持拖拽互动（drag/drag_ex/ex 动画）的 spine 皮肤清单：
+// 由骨架动画扫描得出，这些皮肤互动模式下拖拽会触发 drag 反应动画；
+// 不在名单内的 spine 皮肤无 drag 动画，互动模式下点击切换表情。
+const SPINE_INTERACTIVE = new Set([
+  'z15_2', 'yilisi_2_doa', 'kaiersheng_3', 'qiannai_2_doa', 'huali_2',
+  'bojiateli_2', 'aimudeng_4', 'fulangxisike_2', 'jianye_5', 'paidi_2_doa',
+  'haixiao_3_doa', 'haichou_2', 'telinida_2', 'zhuzi_2_doa', 'hongseshanmai_2',
+  'weikesibao_2', 'weikesibao_3', 'molisen_3', 'molici_2', 'laimuhao_2',
+  'alabama_3', 'na_2_doa', 'xiangdi_2_doa', 'gaoxiong_6', 'niaohai_3',
+])
+const spineInteractive = computed(() => {
+  const sk = currentSkin.value
+  return !!sk && sk.type === 'spine' && SPINE_INTERACTIVE.has(sk.painting)
+})
+// spine 是否有 login 动画（决定「开场动画」按钮是否显示/导出是否带该属性）
+const spineHasLogin = computed(() => {
+  const sk = currentSkin.value
+  return !!sk && sk.type === 'spine' && animOptions.value.some((o) => o.value === 'login')
+})
 
 const bgOptions = [
   { label: '自动取色', value: 'auto' },
   { label: '纯色', value: 'solid' },
-  { label: '渐变', value: 'gradient' },
-  { label: '莫奈', value: 'monet' },
+  { label: '莫奈渐变', value: 'monet' },
   { label: '毛玻璃', value: 'frost' },
   { label: '星空', value: 'star' },
 ]
@@ -945,6 +1089,8 @@ function onSkinClick(item) {
   selectSkinItem(item)
 }
 
+// 上下键翻动左侧列表选中项（角色/皮肤切换）：按当前筛选列表移动选中位置，
+// 再滚动到可见。与缩放无关（取景统一由方案 B 保证，切换角色不会缩放跳变）。
 function railStep(dir) {
   const list = skinMode.value ? filteredSkins.value : filtered.value
   if (!list.length) return
@@ -960,6 +1106,27 @@ function railStep(dir) {
   const next = cur < 0 ? (dir > 0 ? 0 : list.length - 1) : (cur + dir + list.length) % list.length
   if (skinMode.value) selectSkinItem(list[next])
   else selectShip(list[next])
+  // 键盘翻动后让左侧列表同步滚动到选中项（等 DOM 应用 .active 后再定位）
+  nextTick(scrollRailToSelected)
+}
+
+// 让左侧角色库滚动到当前选中项（键盘翻动时保持选中项可见）。
+// 用 getBoundingClientRect 差值计算，不受定位祖先影响；block=nearest 语义：
+// 选中项在视口内就不动，只在越界时滚动到可见位置，连续翻动不会跳动。
+function scrollRailToSelected() {
+  const rail = railListRef.value
+  if (!rail) return
+  const active = rail.querySelector('.rail-card.active')
+  if (!active) return
+  const rTop = rail.getBoundingClientRect().top
+  const rBottom = rail.getBoundingClientRect().bottom
+  const eTop = active.getBoundingClientRect().top
+  const eBottom = active.getBoundingClientRect().bottom
+  if (eTop < rTop) {
+    rail.scrollTop += eTop - rTop
+  } else if (eBottom > rBottom) {
+    rail.scrollTop += eBottom - rBottom
+  }
 }
 
 async function batchDownload() {
@@ -1079,6 +1246,8 @@ function onKeydown(e) {
     }
     return
   }
+  // 上下键：切换左侧列表选中项（角色/皮肤），保持选中项滚动可见。
+  // 注意：不在此处改缩放——不同皮肤显示大小由取景统一（方案 B），切换角色不会“缩放跳变”。
   if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
   if (fullscreen.value) return
   e.preventDefault()
@@ -1107,6 +1276,10 @@ async function doExport() {
       alignment: alignment.value,
       animation: animation.value,
       animations: exportAnimations(),
+      intro: introOn.value,
+      track: mouseTrackOn.value,
+      voice: voiceEnabled.value,
+      showHitAreas: showHitAreas.value,
     })
   } catch (e) {
     exportResult.value = { ok: false, error: e.message || '导出失败' }
@@ -1136,6 +1309,10 @@ async function doApply() {
       alignment: alignment.value,
       animation: animation.value,
       animations: exportAnimations(),
+      intro: introOn.value,
+      track: mouseTrackOn.value,
+      voice: voiceEnabled.value,
+      showHitAreas: showHitAreas.value,
     })
   } catch (e) {
     applyResult.value = { ok: false, error: e.message || '导出并应用失败' }
@@ -2055,6 +2232,45 @@ onBeforeUnmount(() => {
 .bar-dim {
   color: var(--muted);
   font-size: 12px;
+}
+
+/* 偏移滑块行：滑块 + 实时数值并排，数值右对齐等宽数字，0 弱化 */
+.offset-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.offset-row .n-slider {
+  flex: 1;
+  min-width: 0;
+}
+.bar-value {
+  min-width: 42px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--blue);
+}
+.bar-value.zero {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+/* WE 预设导入 */
+.preset-import-btn {
+  width: 100%;
+  justify-content: center;
+  font-size: 13px;
+  padding: 7px 12px;
+  border-style: dashed;
+}
+.preset-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
 }
 
 .download-msg {

@@ -58,7 +58,16 @@ async function loadAll() {
       asset: loc ? loc.asset : null,
     })
   }
-  cache = Object.values(byShip)
+  cache = Object.values(byShip).sort((a, b) => {
+    // 左侧角色列表按名称拼音排序（全拼字典序 = 首字母 A-Z 分组 + 组内按全拼排）。
+    // 无拼音数据的条目（特殊字符名等）排在最后。
+    const pa = a.py && a.py.p ? a.py.p : ''
+    const pb = b.py && b.py.p ? b.py.p : ''
+    if (pa && pb) return pa.localeCompare(pb)
+    if (pa) return -1
+    if (pb) return 1
+    return a.name.localeCompare(b.name)
+  })
   return cache
 }
 
