@@ -77,8 +77,13 @@ def main() -> int:
     ok = check("前端无 8766 残留", not assets_have(src_dist, "127.0.0.1:8766")) and ok
 
     # 3) PyInstaller
+    # 注意：.venv/Scripts/pyinstaller.exe 在部分机器上是坏入口（静默失败 exit 1），
+    # 此时必须 fallback 到 python -m PyInstaller，否则打包直接失败。
     if PYINSTALLER.exists():
         r = run([str(PYINSTALLER), "azurlane.spec", "--noconfirm", "--clean"])
+        if r.returncode != 0:
+            print("  [info] pyinstaller.exe 入口失效，改用 python -m PyInstaller")
+            r = run([sys.executable, "-m", "PyInstaller", "azurlane.spec", "--noconfirm", "--clean"])
     else:
         r = run([sys.executable, "-m", "PyInstaller", "azurlane.spec", "--noconfirm", "--clean"])
     ok = check("PyInstaller 构建", r.returncode == 0) and ok

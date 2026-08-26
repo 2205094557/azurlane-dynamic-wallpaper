@@ -1144,21 +1144,6 @@ class Handler(BaseHTTPRequestHandler):
                 # 前端运行时错误上报（排障用）：打印到 stdout，不落盘
                 print(f"[fe-error] {json.dumps(data, ensure_ascii=False)[:800]}", flush=True)
                 self._send(200, {"ok": True})
-            elif self.path.startswith("/api/debug-frame"):
-                # 预览诊断帧：保存 base64 PNG 到 _debug_frames（排障"画面定格"用）
-                import base64 as _b64
-                try:
-                    tag = str(data.get("tag", "frame"))[:40]
-                    payload = data.get("png", "")
-                    if payload.startswith("data:"):
-                        payload = payload.split(",", 1)[1]
-                    d = ROOT / "_debug_frames"
-                    d.mkdir(exist_ok=True)
-                    (d / f"{tag}.png").write_bytes(_b64.b64decode(payload))
-                    self._send(200, {"ok": True, "saved": str(d / f"{tag}.png")})
-                except Exception as e:  # noqa: BLE001
-                    print(f"[debug-frame] 保存失败: {e}")
-                    self._send(200, {"ok": False})
             elif self.path.startswith("/api/export-image-data"):
                 self._send(
                     200,

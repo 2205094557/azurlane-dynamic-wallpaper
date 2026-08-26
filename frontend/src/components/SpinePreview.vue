@@ -919,7 +919,6 @@ function applyCharacterFit() {
 }
 
 let _dc = 0
-let _dbgLast = 0
 function render() {
   // 诊断：帧计数 + 互动状态 + 第一个骨架 track0 的动画时间（判断「动画是否还在推进」）
   let _t = ''
@@ -961,18 +960,6 @@ function render() {
       }
     }
     clearRenderFrame()
-    // 诊断取证：互动状态每 2s 抓一帧上报后端，判断真实渲染动没动
-    if (interactState !== 'normal') {
-      const _dt0 = performance.now()
-      if (_dt0 - (_dbgLast || 0) > 2000) {
-        _dbgLast = _dt0
-        try {
-          const _url = canvasRef.value.toDataURL('image/png')
-          const _e0 = _l0 && _l0.state && _l0.state.getCurrent(0)
-          fetch((window.API_BASE||'http://127.0.0.1:8766')+'/api/debug-frame',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tag:'spine_'+Math.round(performance.now()),png:_url,state:interactState,anim:_e0&&_e0.animation?_e0.animation.name:'',time:_e0?Math.round(_e0.trackTime*10)/10:-1})}).catch(()=>{})
-        } catch (e) {}
-      }
-    }
   } catch (e) {
     console.error('[spine-render] 帧内异常:', e.message || e)
     if (!disposed) emit('error', '[spine-render] ' + (e.message || String(e)))
