@@ -650,7 +650,8 @@ function playInteractAnim(name, loop) {
   if (hasExact) list = [name];
   else {
     for (var b = 0; b < first.data.animations.length; b++) {
-      if (first.data.animations[b].name.indexOf(name) === 0) list.push(first.data.animations[b].name);
+      var nm = first.data.animations[b].name;
+      if (nm.indexOf(name) === 0 && nm.indexOf(name + '_') !== 0) list.push(nm);
     }
   }
   if (!list.length) return;
@@ -722,8 +723,9 @@ function cycleExpression() {
       var def = pickAnim(l.data);
       if (def) l.state.setAnimation(0, def, true);
     }
+    // 先清 track1（把上一张表情切过的附件全部还原），避免新表情叠在旧表情残留上
+    l.state.clearTrack(1);
     if (_exprIndex < exprs.length) l.state.setAnimation(1, exprs[_exprIndex], false);
-    else l.state.clearTrack(1);
   });
 }
 

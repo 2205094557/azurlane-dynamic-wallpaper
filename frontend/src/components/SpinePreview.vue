@@ -280,7 +280,7 @@ function playInteractAnim(name, loop) {
   if (!first) return
   let list = []
   if (first.data.animations.some((a) => a.name === name)) list = [name]
-  else list = first.data.animations.filter((a) => a.name.startsWith(name)).map((a) => a.name)
+  else list = first.data.animations.filter((a) => a.name.startsWith(name) && !a.name.startsWith(name + '_')).map((a) => a.name)
   // 非 drag 场景忽略序号逻辑（touch 系/普通动画无后缀对应需求）
   if (list.length === 1 && list[0] === name) list = [name]
   if (!list.length) return
@@ -1205,10 +1205,10 @@ function cycleExpression() {
       const def = pickAnim(l.data)
       if (def) l.state.setAnimation(0, def, true)
     }
+    // 先清 track1（把上一张表情切过的附件全部还原），避免新表情叠在旧表情残留上
+    l.state.clearTrack(1)
     if (exprIndex < exprs.length) {
       l.state.setAnimation(1, exprs[exprIndex], false)
-    } else {
-      l.state.clearTrack(1) // 循环回无表情
     }
   }
 }
