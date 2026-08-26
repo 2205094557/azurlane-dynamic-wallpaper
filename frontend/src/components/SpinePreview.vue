@@ -267,22 +267,20 @@ function interactKind() {
 
 // 播放互动状态机动画（track 0 替换；表情不参与）
 function playInteractAnim(name, loop) {
+  const first = layers.find((l) => l.skeleton)
+  if (!first) return
+  // 前缀枚举：精确名优先，否则所有 name 开头的动画（drag → drag1/drag2/drag3）。
+  // 官方 config 的 action/change_idle 是数组——每点一次从变体中随机选（与游戏一致）。
+  let list
+  if (first.data.animations.some((a) => a.name === name)) list = [name]
+  else list = first.data.animations.filter((a) => a.name.startsWith(name)).map((a) => a.name)
+  if (!list.length) return
+  const target = list[Math.floor(Math.random() * list.length)]
   for (const l of layers) {
     if (!l.skeleton) continue
-    // 前缀匹配：精确名优先，否则找 name 开头的动画。
-    // 足尖弓矢等皮肤实际动画是 drag1/drag2/drag3、ex1s/ex2f、drag_ex1..（带后缀），
-    // 状态机传 drag/ex/drag_ex 必须能落到这些真实动画名。
-    let target = null
-    if (l.data.animations.some((a) => a.name === name)) {
-      target = name
-    } else {
-      const pref = l.data.animations.find((a) => a.name.startsWith(name))
-      if (pref) target = pref.name
-    }
-    if (target) {
-      l.state.clearTrack(1)
-      l.state.setAnimation(0, target, loop)
-    }
+    if (!l.data.animations.some((a) => a.name === target)) continue
+    l.state.clearTrack(1)
+    l.state.setAnimation(0, target, loop)
   }
 }
 
