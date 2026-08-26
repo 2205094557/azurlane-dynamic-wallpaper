@@ -244,9 +244,13 @@ function hasAnim(name) {
 //   （开场 login 撥一次回 normal；点击部位播对应 touch 动画一次回 normal，
 //    如 腓特烈大帝·携心夜烛 feiteliedadi_5）
 const TOUCH_ANIMS = ['touch_body', 'touch_head', 'touch_special']
+// 动画名是否匹配前缀（drag → drag1/drag2/drag3；ex → ex1s/ex2f）
+function hasPrefixAnim(n, prefix) {
+  return n.some((a) => a === prefix || a.startsWith(prefix))
+}
 function isInteractiveSkin() {
   const n = animNames()
-  if (n.includes('drag') && n.includes('ex')) return true
+  if (hasPrefixAnim(n, 'drag') && hasPrefixAnim(n, 'ex')) return true
   if (TOUCH_ANIMS.some((t) => n.includes(t)) || n.includes('login')) return true
   // 远程数据集有该皮肤的 hitAreas 也视为互动皮肤（如 kaiersheng_2 等纯表情+hit 皮肤）
   return remoteHitAreas.length > 0
@@ -255,7 +259,7 @@ function isInteractiveSkin() {
 // 当前皮肤是哪类互动：'drag' | 'touch' | ''
 function interactKind() {
   const n = animNames()
-  if (n.includes('drag') && n.includes('ex')) return 'drag'
+  if (hasPrefixAnim(n, 'drag') && hasPrefixAnim(n, 'ex')) return 'drag'
   if (TOUCH_ANIMS.some((t) => n.includes(t))) return 'touch'
   if (n.includes('login')) return 'touch'
   return ''

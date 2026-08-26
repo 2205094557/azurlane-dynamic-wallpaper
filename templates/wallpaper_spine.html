@@ -591,11 +591,14 @@ function animNames0() {
 }
 function hasAnim0(name) {
   var names = animNames0();
-  return names.indexOf(name) >= 0;
+  if (names.indexOf(name) >= 0) return true;
+  // 前缀匹配：drag → drag1/drag2/drag3（足尖弓矢等动画带数字后缀）
+  for (var i = 0; i < names.length; i++) if (names[i].indexOf(name) === 0) return true;
+  return false;
 }
 function isInteractiveSkin() {
   var names = animNames0();
-  if (names.indexOf("drag") >= 0 && names.indexOf("ex") >= 0) return true;
+  if (hasAnim0("drag") && (names.indexOf("ex") >= 0 || names.some(function (a) { return a.indexOf("ex") === 0; }))) return true;
   for (var i = 0; i < TOUCH_ANIMS.length; i++) if (names.indexOf(TOUCH_ANIMS[i]) >= 0) return true;
   return names.indexOf("login") >= 0;
 }
@@ -764,14 +767,15 @@ function initInteract() {
     // ★ drag 皮肤：直接走本地 drag 状态机（drag→ex→drag_ex→normal）。
     //   官方 config_client 对 drag 皮肤规则与本地状态机等价，但 playRuleAction
     //   只播 action 不驱动完整状态机（complete 后不自动切 ex/normal），会卡死。
-    if (animNames0().indexOf("drag") >= 0 && animNames0().indexOf("ex") >= 0) {
+    var hasDragA = hasAnim0("drag"), hasExA = hasAnim0("ex");
+    if (hasDragA && hasExA) {
       startInteractDrag();
       spinePlayVoice("touch_body");
       return;
     }
     // 官方规则状态机：touch 系 skin 按当前 idle 匹配规则（无规则走下方回退）
     if (playRuleAction(null)) return;
-    if (animNames0().indexOf("drag") >= 0) {
+    if (hasDragA) {
       startInteractDrag();
       spinePlayVoice("touch_body");
     } else if (hasExpressions()) {
