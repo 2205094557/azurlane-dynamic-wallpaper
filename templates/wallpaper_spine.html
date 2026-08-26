@@ -575,7 +575,7 @@ window.__captureCanvasDataURL = function () {
 //   drag_ex →(播完)→ normal。
 // touch 系（有 login/touch_* 动画，如 携心夜烛 feiteliedadi_5）：开场 login
 //   播一次回 normal；点击轮换播 touch_body/head/special 一次回 normal。
-var interactState = "normal"; // normal | drag | ex | drag_ex | login
+var interactState = "normal"; var _dragSeq = 0; // normal | drag | ex | drag_ex | login
 var interactEnabled = false;
 var dragging = false;
 var TOUCH_ANIMS = ["touch_body", "touch_head", "touch_special"];
@@ -602,12 +602,15 @@ function isInteractiveSkin() {
   for (var i = 0; i < TOUCH_ANIMS.length; i++) if (names.indexOf(TOUCH_ANIMS[i]) >= 0) return true;
   return names.indexOf("login") >= 0;
 }
+function dragSeqOf(name) {
+  var m = /^(?:drag_ex|drag|ex)(\d+)/.exec(name || "");
+  return m ? parseInt(m[1], 10) : 0;
+}
 function playInteractAnim(name, loop) {
   var first = null;
   for (var i = 0; i < skeletons.length; i++) if (skeletons[i].skeleton) { first = skeletons[i]; break; }
   if (!first) return;
   // 前缀枚举：精确名优先，否则所有 name 开头动画（drag → drag1/drag2/drag3）——
-  // 官方 action/change_idle 是数组，每点一次从变体中随机选（与游戏一致）。
   var list = [];
   var hasExact = false;
   for (var a = 0; a < first.data.animations.length; a++) {
@@ -621,6 +624,16 @@ function playInteractAnim(name, loop) {
   }
   if (!list.length) return;
   var target = list[Math.floor(Math.random() * list.length)];
+  // 序号对应：drag 选变体记序号；ex / drag_ex 阶段优先选同序号变体（drag1→ex1s、drag2→ex2f）
+  if (/^drag/.test(name) && !/^drag_ex/.test(name)) {
+    _dragSeq = dragSeqOf(target);
+  } else if (/^ex/.test(name) && !/^drag_ex/.test(name) && _dragSeq > 0) {
+    var match = list.filter(function (an) { return dragSeqOf(an) === _dragSeq; });
+    if (match.length) target = match[Math.floor(Math.random() * match.length)];
+  } else if (/^drag_ex/.test(name) && _dragSeq > 0) {
+    var match2 = list.filter(function (an) { return dragSeqOf(an) === _dragSeq; });
+    if (match2.length) target = match2[Math.floor(Math.random() * match2.length)];
+  }
   skeletons.forEach(function (l) {
     if (!l.skeleton) return;
     if (!l.data.animations.some(function (a) { return a.name === target; })) return;

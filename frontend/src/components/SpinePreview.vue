@@ -64,7 +64,8 @@ let remoteHitAreas = []
 // ---- Spine 互动状态机 ----
 // 官方逻辑：normal 循环 →(拖身体)→ drag →(播完)→ ex 循环 →(ex 中再拖)→
 // drag_ex →(播完)→ normal 循环。drag/drag_ex 是单次拖拽反应，ex 是互动后的展示。
-let interactState = 'normal' // 'normal' | 'drag' | 'ex' | 'drag_ex'
+let interactState = 'normal'
+let _dragSeq = 0 // drag 变体序号（dragN → exN 对应） // 'normal' | 'drag' | 'ex' | 'drag_ex'
 let interactTimer = 0
 let voiceShipId = null
 let voicePick = null // { touch_head/touch_body/touch_special/login/home: cue }
@@ -265,17 +266,38 @@ function interactKind() {
   return ''
 }
 
-// 播放互动状态机动画（track 0 替换；表情不参与）
+// 提取 drag 变体序号：drag1→1、drag2→2；ex1s→1、ex2f→2；drag_ex1→1
+function variantSeqOf(name) {
+  const m = /^(?:drag_ex|drag|ex)(\d+)/.exec(name || '')
+  return m ? parseInt(m[1], 10) : 0
+}
+
+// 播放互动状态机动画（track 0 替换；表情不参与）。
+// 前缀枚举所有变体并随机选一个（官方 action/change_idle 是数组语义）；
+// 同时记住序号，保证 dragN 播完 → 对应序号的 exN（足尖弓矢 drag1→ex1s 等）。
 function playInteractAnim(name, loop) {
   const first = layers.find((l) => l.skeleton)
   if (!first) return
-  // 前缀枚举：精确名优先，否则所有 name 开头的动画（drag → drag1/drag2/drag3）。
-  // 官方 config 的 action/change_idle 是数组——每点一次从变体中随机选（与游戏一致）。
-  let list
+  let list = []
   if (first.data.animations.some((a) => a.name === name)) list = [name]
   else list = first.data.animations.filter((a) => a.name.startsWith(name)).map((a) => a.name)
+  // 非 drag 场景忽略序号逻辑（touch 系/普通动画无后缀对应需求）
+  if (list.length === 1 && list[0] === name) list = [name]
   if (!list.length) return
-  const target = list[Math.floor(Math.random() * list.length)]
+  let target = list[Math.floor(Math.random() * list.length)]
+  if (/^drag/.test(name) && !/^drag_ex/.test(name)) {
+    _dragSeq = variantSeqOf(target) // 记 drag 序号（ex 将用同序号）
+  }
+  // ex 名称带序号偏好：若拖拽已定 dragN，ex 阶段优先播同序号 exN（有才用）
+  if (/^ex/.test(name) && !/^drag_ex/.test(name) && _dragSeq > 0) {
+    const match = list.filter((a) => variantSeqOf(a) === _dragSeq)
+    if (match.length) target = match[Math.floor(Math.random() * match.length)]
+  }
+  // drag_ex 同样优先同序号（对应 exN 的反向拖拽）
+  if (/^drag_ex/.test(name) && _dragSeq > 0) {
+    const match = list.filter((a) => variantSeqOf(a) === _dragSeq)
+    if (match.length) target = match[Math.floor(Math.random() * match.length)]
+  }
   for (const l of layers) {
     if (!l.skeleton) continue
     if (!l.data.animations.some((a) => a.name === target)) continue
@@ -803,6 +825,7 @@ function updateInteractiveOverlay() {
 
   const areas = []
   const names = animNames()
+  let exprShown = false // 数字表情区只显示一个（脸上的），避免同皮肤出现多个表情框
   for (const h of remoteHitAreas) {
     const box = hitWorldBox(h)
     const labelMap = {
@@ -811,6 +834,10 @@ function updateInteractiveOverlay() {
       drag: '拖拽', drag_ex: '拖拽②', ex: '互动', login: '开场',
       // 足尖弓矢等：拖拽区命名 random，换装区 skin_1/skin_2（L2D 也显示真实区域名）
       random: '拖拽', skin_1: '换装①', skin_2: '换装②',
+    }
+    if (/^\d+$/.test(h.name)) {
+      if (exprShown) continue // 已有表情框，跳过其余数字区
+      exprShown = true
     }
     let label = labelMap[h.name] || ''
     if (/^\d+$/.test(h.name)) label = '表情' + h.name
