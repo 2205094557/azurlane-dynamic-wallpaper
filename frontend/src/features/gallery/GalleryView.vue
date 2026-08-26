@@ -297,33 +297,6 @@
               />
             </div>
           </div>
-          <div class="panel-field">
-            <label>动画</label>
-            <n-select
-              v-model:value="animation"
-              :options="animOptions"
-              size="small"
-              :disabled="!animOptions.length"
-              placeholder="无"
-              style="width: 100%"
-            />
-            <div v-if="animOptions.length" class="anim-nav">
-              <button class="wc-btn anim-nav-btn" @click="stepAnim(-1)">←</button>
-              <span class="anim-nav-label">{{ animIndex + 1 }} / {{ animOptions.length }}</span>
-              <button class="wc-btn anim-nav-btn" @click="stepAnim(1)">→</button>
-            </div>
-            <div v-if="animOptions.length" class="panel-field anim-multi">
-              <label>导出可切换动画（多选）</label>
-              <n-select
-                v-model:value="animMulti"
-                :options="animOptions"
-                multiple
-                size="small"
-                placeholder="选入后可在壁纸引擎里切换"
-                style="width: 100%"
-              />
-            </div>
-          </div>
         </div>
 
         <div class="panel-card">
@@ -591,7 +564,6 @@ const filters = reactive({ search: '', type: 'all', faction: null, hull: null, t
 const bgStyle = ref('auto')
 const animation = ref('normal')
 const animOptions = ref([])
-const animMulti = ref([])
 const scale = ref(100)
 const offsetX = ref(0)
 const offsetY = ref(0)
@@ -1009,7 +981,6 @@ function selectShip(ship) {
   selectedId.value = ship.id
   currentSkinIndex.value = 0
   animOptions.value = []
-  animMulti.value = []
   animation.value = 'normal'
 }
 
@@ -1193,19 +1164,6 @@ function onSpineAnims(names) {
   if (!animation.value || !names.includes(animation.value)) {
     animation.value = names.find((n) => /^idle$/i.test(n)) || names.find((n) => n === 'home') || names[0] || ''
   }
-  if (!animMulti.value.length && animation.value) animMulti.value = [animation.value]
-}
-
-const animIndex = computed(() => {
-  const i = animOptions.value.findIndex((o) => o.value === animation.value)
-  return i >= 0 ? i : 0
-})
-
-function stepAnim(dir) {
-  const n = animOptions.value.length
-  if (!n) return
-  const next = (animIndex.value + dir + n) % n
-  animation.value = animOptions.value[next].value
 }
 
 function onEngineError(msg) {
@@ -1240,10 +1198,6 @@ function onKeydown(e) {
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
   if (t && t.closest && t.closest('.n-select')) return
   if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-    if (animOptions.value.length) {
-      e.preventDefault()
-      stepAnim(e.key === 'ArrowLeft' ? -1 : 1)
-    }
     return
   }
   // 上下键：切换左侧列表选中项（角色/皮肤），保持选中项滚动可见。
@@ -1252,12 +1206,6 @@ function onKeydown(e) {
   if (fullscreen.value) return
   e.preventDefault()
   railStep(e.key === 'ArrowDown' ? 1 : -1)
-}
-
-function exportAnimations() {
-  const list = [...(animMulti.value || [])]
-  if (animation.value && !list.includes(animation.value)) list.unshift(animation.value)
-  return list
 }
 
 async function doExport() {
@@ -1274,8 +1222,6 @@ async function doExport() {
       offsetX: offsetX.value,
       offsetY: offsetY.value,
       alignment: alignment.value,
-      animation: animation.value,
-      animations: exportAnimations(),
       intro: introOn.value,
       track: mouseTrackOn.value,
       voice: voiceEnabled.value,
@@ -1307,8 +1253,6 @@ async function doApply() {
       offsetX: offsetX.value,
       offsetY: offsetY.value,
       alignment: alignment.value,
-      animation: animation.value,
-      animations: exportAnimations(),
       intro: introOn.value,
       track: mouseTrackOn.value,
       voice: voiceEnabled.value,
@@ -1407,10 +1351,8 @@ async function doExportImage() {
         showMsg('✗ 暂无法读取当前预览画面')
         return
       }
-      // spine 导出时文件名带当前动画序号（角色名-N.png，N 为第几个动画）；live2d 保持原名
-      const animNo =
-        skin.type === 'spine' && animOptions.value.length ? animIndex.value + 1 : null
-      res = await bridge.exportImageData(skin.ship, skin.bundle, skin.name, dataUrl, animNo)
+      // 导出封面图：不再带动画序号（动画切换功能已移除）
+      res = await bridge.exportImageData(skin.ship, skin.bundle, skin.name, dataUrl, null)
     }
     if (res && res.ok) {
       showMsg(`✓ 图片已导出：${res.message}`)

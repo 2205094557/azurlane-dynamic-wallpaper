@@ -157,23 +157,6 @@ def project_json(
             "order": 100,
         },
     }
-    anims = [a for a in (animations or []) if a]
-    if anims:
-        try:
-            anim_idx = anims.index(animation or anims[0])
-        except ValueError:
-            anim_idx = 0
-        properties["animselect"] = {
-            "text": "动画切换", "type": "combo",
-            "value": anims[anim_idx],
-            "options": [
-                {"label": a.replace("_", " "), "value": a}
-                for a in anims
-            ],
-            "editable": True,
-            "index": 4,
-            "order": 104,
-        }
 
     # Live2D 专属面板开关：语音（互动语音开/关）、开场动画（login 播一次再回 idle）、
     # 互动（点击/拖拽等交互是否生效）、鼠标追踪（视线/头部跟随鼠标）。
@@ -217,16 +200,12 @@ def export_defaults(options: dict) -> dict:
     align = options.get("alignment", 0)
     align_name = ALIGN_NAMES[align] if isinstance(align, int) and 0 <= align < len(ALIGN_NAMES) else str(align or "center")
     anim = options.get("animation") or ""
-    anims = [a for a in (options.get("animations") or []) if a]
-    if not anims and anim:
-        anims = [anim]
     return {
         "SCALE": str(scale),
         "OFFSET_X": str(ox),
         "OFFSET_Y": str(oy),
         "ALIGNMENT": align_name,
         "ANIMATION": json.dumps(str(anim), ensure_ascii=False),
-        "ANIM_OPTIONS": json.dumps(anims, ensure_ascii=False),
     }
 
 

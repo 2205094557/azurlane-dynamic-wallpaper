@@ -104,24 +104,6 @@
               title="自定义纯色背景"
             />
 
-            <div class="panel-title">动画</div>
-            <n-select v-model:value="animation" :options="animOptions" :disabled="!animOptions.length" placeholder="无可用动画" />
-            <div v-if="animOptions.length" class="anim-nav">
-              <n-button size="small" quaternary circle @click="stepAnim(-1)">←</n-button>
-              <span class="anim-nav-label">{{ animIndex + 1 }} / {{ animOptions.length }}</span>
-              <n-button size="small" quaternary circle @click="stepAnim(1)">→</n-button>
-            </div>
-            <div v-if="animOptions.length" class="panel-title">导出可切换动画（多选）</div>
-            <div class="anim-multi">
-              <n-select
-                v-model:value="animMulti"
-                :options="animOptions"
-                multiple
-                size="small"
-                placeholder="选入后可在壁纸引擎里切换"
-              />
-            </div>
-
             <div class="panel-title">缩放</div>
             <n-slider v-model:value="scale" :min="20" :max="300" :step="5" />
 
@@ -265,7 +247,6 @@ const applyResult = ref(null)
 const bgStyle = ref('auto')
 const animation = ref('normal')
 const animOptions = ref([])
-const animMulti = ref([])
 const scale = ref(100)
 const offsetX = ref(0)
 const offsetY = ref(0)
@@ -345,25 +326,6 @@ function onSpineAnims(names) {
     animation.value =
       names.find((n) => /^idle$/i.test(n)) || names.find((n) => n === 'home') || names[0] || ''
   }
-  if (!animMulti.value.length && animation.value) animMulti.value = [animation.value]
-}
-
-const animIndex = computed(() => {
-  const i = animOptions.value.findIndex((o) => o.value === animation.value)
-  return i >= 0 ? i : 0
-})
-
-function stepAnim(dir) {
-  const n = animOptions.value.length
-  if (!n) return
-  const next = (animIndex.value + dir + n) % n
-  animation.value = animOptions.value[next].value
-}
-
-function exportAnimations() {
-  const list = [...(animMulti.value || [])]
-  if (animation.value && !list.includes(animation.value)) list.unshift(animation.value)
-  return list
 }
 
 function onKeydown(e) {
@@ -371,10 +333,6 @@ function onKeydown(e) {
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
   if (t && t.closest && t.closest('.n-select')) return
   if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
-  if (animOptions.value.length) {
-    e.preventDefault()
-    stepAnim(e.key === 'ArrowLeft' ? -1 : 1)
-  }
 }
 
 function onEngineError(msg) {
@@ -392,7 +350,6 @@ async function loadShip(id) {
     if (seq !== loadSeq) return // 快速切换舰船时丢弃过期响应，避免旧船覆盖新船
     currentIndex.value = 0
     animOptions.value = []
-    animMulti.value = []
   } catch (e) {
     if (seq !== loadSeq) return
     ship.value = null
@@ -439,8 +396,6 @@ async function doExport() {
       offsetX: offsetX.value,
       offsetY: offsetY.value,
       alignment: alignment.value,
-      animation: animation.value,
-      animations: exportAnimations(),
       // 预览页当前开关状态 → WE 侧默认值（编辑导入会覆盖，但一键应用保留）
       voice: voiceEnabled.value,
       intro: introOn.value,
@@ -469,8 +424,6 @@ async function doApply() {
       offsetX: offsetX.value,
       offsetY: offsetY.value,
       alignment: alignment.value,
-      animation: animation.value,
-      animations: exportAnimations(),
       // 预览页当前开关状态 → WE 侧默认值（一键应用保留，不会被编辑导入历史值覆盖）
       voice: voiceEnabled.value,
       intro: introOn.value,

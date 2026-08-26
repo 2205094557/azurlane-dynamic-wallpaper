@@ -23,7 +23,6 @@ var OFFSET_X = {{OFFSET_X}};    // 画布宽 %
 var OFFSET_Y = {{OFFSET_Y}};    // 画布高 %
 var ALIGNMENT = "{{ALIGNMENT}}"; // center / left-top / right-top / left-bottom / right-bottom
 var ANIMATION = {{ANIMATION}};  // 导出的初始动画名（空则按 idle/normal 自动选择）
-var ANIM_OPTIONS = {{ANIM_OPTIONS}}; // 可在 WE 下拉切换的动画列表
 var VOICE_JSON = {{VOICE_JSON}}; // 互动语音配置 {dir,pick,mains}；null=无语音
 var VOICE_ON = {{VOICE}};       // 互动语音开关（false=壁纸不播语音）
 var INTRO_ON = {{INTRO}};       // 开场动画开关（false=不播 login 入场直接待机）
@@ -151,16 +150,7 @@ function playAnim(name) {
 }
 
 // WE combo 的 value 可能是动画名（{label,value} 格式的隐藏值），
-// 也可能是下标（字符串/数字），这里兼容两种情况。
-function animNameFromValue(v) {
-  if (typeof v === "number") return ANIM_OPTIONS[v] || null;
-  if (typeof v === "string") {
-    if (ANIM_OPTIONS.indexOf(v) >= 0) return v;
-    var n = parseInt(v, 10);
-    if (!isNaN(n) && ANIM_OPTIONS[n]) return ANIM_OPTIONS[n];
-  }
-  return null;
-}
+
 
 function isBgLayer(l) {
   // 背景层识别：skel 名去掉 .skel 后以 B/BG/_B/bg/_bg（可带数字）结尾
@@ -533,8 +523,6 @@ window.wallpaperPropertyListener = {
         }
         if (properties.playintro) INTRO_ON = properties.playintro.value === true || properties.playintro.value === 1;
         if (properties.interact) interactOn = properties.interact.value === true || properties.interact.value === 1;
-        var firstName = properties.animselect ? animNameFromValue(properties.animselect.value) : null;
-        if (firstName) playAnim(firstName);
         if (skeletons.length) applyLayout();
         return;
       }
@@ -546,10 +534,6 @@ window.wallpaperPropertyListener = {
         var av = properties.alignment.value;
         if (typeof av === "number") ALIGNMENT = WallpaperLayout.ALIGN_ORDER[av] || ALIGNMENT;
         else if (typeof av === "string") ALIGNMENT = av;
-      }
-      if (properties.animselect) {
-        var animName = animNameFromValue(properties.animselect.value);
-        if (animName) playAnim(animName);
       }
       // ===== WE 面板开关实时切换（与 L2D 一致）=====
       // 互动语音：关→停当前语音并不再播放
