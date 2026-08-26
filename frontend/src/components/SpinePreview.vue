@@ -265,9 +265,19 @@ function interactKind() {
 function playInteractAnim(name, loop) {
   for (const l of layers) {
     if (!l.skeleton) continue
+    // 前缀匹配：精确名优先，否则找 name 开头的动画。
+    // 足尖弓矢等皮肤实际动画是 drag1/drag2/drag3、ex1s/ex2f、drag_ex1..（带后缀），
+    // 状态机传 drag/ex/drag_ex 必须能落到这些真实动画名。
+    let target = null
     if (l.data.animations.some((a) => a.name === name)) {
+      target = name
+    } else {
+      const pref = l.data.animations.find((a) => a.name.startsWith(name))
+      if (pref) target = pref.name
+    }
+    if (target) {
       l.state.clearTrack(1)
-      l.state.setAnimation(0, name, loop)
+      l.state.setAnimation(0, target, loop)
     }
   }
 }

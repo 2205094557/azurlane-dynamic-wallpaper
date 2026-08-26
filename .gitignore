@@ -18,3 +18,4 @@ references/
 # 本地机器工具不入库，由 build_pack.py 自检保证打包版存在
 tools/vgmstream/
 _debug_frames/
+_tmp_*.txt

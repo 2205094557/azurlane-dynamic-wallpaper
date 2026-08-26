@@ -601,9 +601,16 @@ function isInteractiveSkin() {
 }
 function playInteractAnim(name, loop) {
   skeletons.forEach(function (l) {
-    if (!l.data.animations.some(function (a) { return a.name === name; })) return;
+    // 前缀匹配：精确名优先，否则找 name 开头的动画（足尖弓矢等是 drag1/drag2/ex1s..）
+    var target = null;
+    if (l.data.animations.some(function (a) { return a.name === name; })) target = name;
+    else {
+      var pref = l.data.animations.find(function (a) { return a.name.indexOf(name) === 0; });
+      if (pref) target = pref.name;
+    }
+    if (!target) return;
     l.state.clearTrack(1);
-    l.state.setAnimation(0, name, loop);
+    l.state.setAnimation(0, target, loop);
   });
 }
 function enterInteract(state) {
