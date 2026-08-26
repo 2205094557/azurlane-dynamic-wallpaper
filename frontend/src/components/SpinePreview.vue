@@ -1063,15 +1063,15 @@ function hitAreaAt(wx, wy) {
 function onCanvasDown(e) {
   if (e.button !== 0) return
   e.preventDefault()
+  // ★ 纯表情皮肤（无 drag/touch/login 动画，如 与阳光一同闪耀 / 晨光里的事故）：
+  // 点击任意处循环切换全部表情（1→2→…→无表情→1）。这是基础功能，不依赖互动模式开关。
+  const kind0 = interactKind()
+  const hasTouchAnims = ['touch_body', 'touch_head', 'touch_special'].some((t) => hasAnim(t))
+  if (kind0 !== 'drag' && !hasTouchAnims && !hasAnim('login')) {
+    cycleExpression()
+    return
+  }
   if (props.interactionMode && isInteractiveSkin()) {
-    // 纯表情皮肤（无 drag/touch/login 动画，如 与阳光一同闪耀）：
-    // 点击任意处循环切换全部表情（1→2→…→无表情→1）
-    const kind0 = interactKind()
-    const hasTouchAnims = ['touch_body', 'touch_head', 'touch_special'].some((t) => hasAnim(t))
-    if (kind0 !== 'drag' && !hasTouchAnims && !hasAnim('login')) {
-      cycleExpression()
-      return
-    }
     // 精确部位命中：hitArea 世界框（数据来自游戏 prefab 提取的参考数据集）
     const rect = canvasRef.value.getBoundingClientRect()
     const wp = screenToWorld(e.clientX - rect.left, e.clientY - rect.top)
