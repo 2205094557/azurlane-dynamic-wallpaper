@@ -301,7 +301,12 @@ function playInteractAnim(name, loop) {
   for (const l of layers) {
     if (!l.skeleton) continue
     if (!l.data.animations.some((a) => a.name === target)) continue
+    // 先清 track1（表情）并复位骨架到 setup pose：表情的 AttachmentTimeline 已把
+    // 眉毛/眼等附件切走，仅 clearTrack(1) 不会还原 attachment —— 必须 setToSetupPose
+    // 复位表情切过的附件，下一帧 state.apply 会重新应用 track0 互动动画。
     l.state.clearTrack(1)
+    l.skeleton.setToSetupPose()
+    l.skeleton.updateWorldTransform()
     l.state.setAnimation(0, target, loop)
   }
 }

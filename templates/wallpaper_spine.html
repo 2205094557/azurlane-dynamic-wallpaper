@@ -669,7 +669,10 @@ function playInteractAnim(name, loop) {
   skeletons.forEach(function (l) {
     if (!l.skeleton) return;
     if (!l.data.animations.some(function (a) { return a.name === target; })) return;
+    // 表情叠加修复：清 track1 后复位骨架到 setup pose，还原表情切走的附件
     l.state.clearTrack(1);
+    l.skeleton.setToSetupPose();
+    l.skeleton.updateWorldTransform();
     l.state.setAnimation(0, target, loop);
   });
 }
