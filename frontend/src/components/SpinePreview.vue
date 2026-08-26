@@ -1047,11 +1047,19 @@ function onCanvasDown(e) {
     //   ex/normal），会导致点击后播完 drag 不切 ex、状态机卡死。
     //   因此 drag 皮肤必须绕过官方规则分支，走本地 startInteractDrag。
     if (interactKind() === 'drag') {
-      // 命中 drag 区域（或无命中）都触发拖拽状态机；命中非 drag 区域按该动画播一次
+      // ★ 数字表情命中：循环切换表情（叠加到 track1；表情是 duration=0 的
+      //   静态单帧，替换 track0 会变无动作静态 → 卡）
+      if (area && /^\d+$/.test(area.kind) && hasAnim(area.kind)) {
+        cycleExpression()
+        canvasRef.value.style.cursor = 'grabbing'
+        return
+      }
+      // 命中非 drag 区域（如 touch_head 等）：按该动画播一次
       if (area && area.kind && area.kind !== 'drag' && hasAnim(area.kind)) {
         playInteractAnim(area.kind, false)
         playVoice(/^touch/.test(area.kind) ? area.kind : 'touch_body')
       } else {
+        // drag 区域 / 未命中：本地 drag 状态机
         startInteractDrag()
         playVoice('touch_body')
       }
