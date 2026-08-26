@@ -1063,15 +1063,10 @@ function hitAreaAt(wx, wy) {
 function onCanvasDown(e) {
   if (e.button !== 0) return
   e.preventDefault()
-  // ★ 纯表情皮肤（无 drag/touch/login 动画，如 与阳光一同闪耀 / 晨光里的事故）：
-  // 点击任意处循环切换全部表情（1→2→…→无表情→1）。这是基础功能，不依赖互动模式开关。
-  const kind0 = interactKind()
-  const hasTouchAnims = ['touch_body', 'touch_head', 'touch_special'].some((t) => hasAnim(t))
-  if (kind0 !== 'drag' && !hasTouchAnims && !hasAnim('login')) {
-    cycleExpression()
-    return
-  }
-  if (props.interactionMode && isInteractiveSkin()) {
+  // 互动模式下才触发互动逻辑（纯表情皮肤切表情、drag 皮肤拖拽反应、touch 系触摸）。
+  // 注意：纯表情皮肤 isInteractiveSkin() 为 false 但同样需要互动（点击切表情），
+  // 所以这里不 gate isInteractiveSkin——互动模式一律走互动逻辑，未命中区域再按皮肤类型分流。
+  if (props.interactionMode) {
     // 精确部位命中：hitArea 世界框（数据来自游戏 prefab 提取的参考数据集）
     const rect = canvasRef.value.getBoundingClientRect()
     const wp = screenToWorld(e.clientX - rect.left, e.clientY - rect.top)
