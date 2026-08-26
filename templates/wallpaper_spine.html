@@ -602,6 +602,37 @@ function isInteractiveSkin() {
   for (var i = 0; i < TOUCH_ANIMS.length; i++) if (names.indexOf(TOUCH_ANIMS[i]) >= 0) return true;
   return names.indexOf("login") >= 0;
 }
+function hitWorldBox(h) {
+  var rp = h.rootPosition || [0, 0];
+  var rs = h.rootSize || [1, 1];
+  var pos = h.position || [0, 0];
+  var size = h.size || [0, 0];
+  var rootMinX = rp[0] - rs[0] / 2;
+  var rootMaxX = rp[0] + rs[0] / 2;
+  var rootMaxY = rp[1] + rs[1] / 2;
+  var cx = (rootMinX + rootMaxX) / 2 + pos[0];
+  var cy = rootMaxY - rs[1] / 2 + pos[1];
+  var w = size[0], hh = size[1];
+  return { minX: cx - w / 2, maxX: cx + w / 2, minY: cy - hh / 2, maxY: cy + hh / 2 };
+}
+function screenToWorld(px, py) {
+  var cw = canvas.clientWidth || 1;
+  var ch = canvas.clientHeight || 1;
+  var cam = renderer.camera;
+  var z = cam.zoom || 1;
+  return { x: (px - cw / 2) * z + cam.position.x, y: (ch / 2 - py) * z + cam.position.y };
+}
+// 点击位置命中的 hitArea 名（数字表情区 → "1"/"3"；拖拽区 → drag/random；无 → null）
+function hitNameAt(clientX, clientY) {
+  if (!HIT_AREAS || !HIT_AREAS.length) return null;
+  var r = canvas.getBoundingClientRect();
+  var w = screenToWorld(clientX - r.left, clientY - r.top);
+  for (var i = 0; i < HIT_AREAS.length; i++) {
+    var b = hitWorldBox(HIT_AREAS[i]);
+    if (w.x >= b.minX && w.x <= b.maxX && w.y >= b.minY && w.y <= b.maxY) return HIT_AREAS[i].name;
+  }
+  return null;
+}
 function dragSeqOf(name) {
   var m = /^(?:drag_ex|drag|ex)(\d+)/.exec(name || "");
   return m ? parseInt(m[1], 10) : 0;
@@ -789,13 +820,17 @@ function initInteract() {
       if (hasExpressions()) cycleExpression();
       return;
     }
-    // ★ drag 皮肤：直接走本地 drag 状态机（drag→ex→drag_ex→normal）。
-    //   官方 config_client 对 drag 皮肤规则与本地状态机等价，但 playRuleAction
-    //   只播 action 不驱动完整状态机（complete 后不自动切 ex/normal），会卡死。
+    // ★ drag 皮肤：先按点击坐标命中面部表情区（数字 hitArea）→ 切表情；
+    //   命中其他/未命中 → 本地 drag 状态机（与预览端 hit-test 一致）。
     var hasDragA = hasAnim0("drag"), hasExA = hasAnim0("ex");
     if (hasDragA && hasExA) {
-      startInteractDrag();
-      spinePlayVoice("touch_body");
+      var hitName = hitNameAt(e.clientX, e.clientY);
+      if (hitName && /^\d+$/.test(hitName)) {
+        cycleExpression(); // 点脸（表情区）切换表情
+      } else {
+        startInteractDrag();
+        spinePlayVoice("touch_body");
+      }
       return;
     }
     // 官方规则状态机：touch 系 skin 按当前 idle 匹配规则（无规则走下方回退）
