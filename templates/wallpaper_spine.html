@@ -723,7 +723,9 @@ function cycleTouchInteract() {
   for (var i = 0; i < TOUCH_ANIMS.length; i++) if (names.indexOf(TOUCH_ANIMS[i]) >= 0) order.push(TOUCH_ANIMS[i]);
   if (!order.length) return;
   _touchIndex = (_touchIndex + 1) % order.length;
-  playInteractAnim(order[_touchIndex], false);
+  var action = order[_touchIndex];
+  playInteractAnim(action, false);
+  spinePlayVoice(/^touch/.test(action) ? action : null);
 }
 
 // ===== 官方互动规则状态机 =====

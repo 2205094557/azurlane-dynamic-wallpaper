@@ -14,7 +14,7 @@
 
   var MARGIN = 0.98 // 模型包围盒最多占画布 98%（撑满预览框，参照 azurlane.nagami.moe）
   var MIN_SCALE = 20
-  var MAX_SCALE = 300
+  var MAX_SCALE = 800
   var MAX_OFFSET = 100
   var ALIGN_ORDER = ['center', 'left-top', 'right-top', 'left-bottom', 'right-bottom']
   var ALIGNMENTS = {

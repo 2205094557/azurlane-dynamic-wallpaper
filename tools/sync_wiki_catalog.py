@@ -121,6 +121,24 @@ def fetch_wiki_catalog() -> dict:
         fields = [strip_markup(f).strip() for f in m.group(1).split("|")]
         if len(fields) >= 5 and fields[3]:
             rows.append(fields)
+
+    # 针对未进换装总表的新船：如果舰船图鉴包含该船，解析其自身词条提取换装标题
+    existing_ships_in_skins = {norm(r[0]) for r in rows if r}
+    for title in list(ships.keys()):
+        if norm(title) not in existing_ships_in_skins:
+            try:
+                page_data = wiki_api({"action": "parse", "page": title, "prop": "wikitext"}, timeout=15)
+                pwt = page_data.get("parse", {}).get("wikitext", {}).get("*", "")
+                titles = []
+                for mm in re.finditer(r"\|\s*标题\d+\s*=\s*([^\n|]+)", pwt):
+                    t = strip_markup(mm.group(1)).strip()
+                    if t and t not in titles:
+                        titles.append(t)
+                if titles and title in ships:
+                    ships[title]["outfit_titles"] = titles
+            except Exception:  # noqa: BLE001
+                pass
+
     return {
         "fetched_at": datetime.now().isoformat(timespec="seconds"),
         "ships": ships,
@@ -194,6 +212,18 @@ def build_wiki_ships(raw: dict) -> dict:
             ent["hull"] = hull
         if faction and not ent["faction"]:
             ent["faction"] = faction
+
+    # 兜底补充：对于刚实装未收录进全量换装大表、但个人词条已有【标题N】的新船，自动补进 skins 列表
+    for title, po in raw.get("ships", {}).items():
+        key = norm(title)
+        ent = ships.get(key)
+        if not ent or ent.get("skins"):
+            continue
+        # 如果从自身词条里解析到了皮肤标题
+        page_titles = po.get("outfit_titles") or []
+        for i, sname in enumerate(page_titles, 1):
+            ent["skins"].append({"name": sname, "order": f"换装{i}", "theme": ""})
+            print(f"   [单页换装兜底] {title} -> {sname}")
     return ships
 
 
@@ -779,17 +809,37 @@ def main() -> int:
             return 1
         raw = json.loads(CATALOG.read_text(encoding="utf-8"))
     else:
-        try:
-            raw = fetch_wiki_catalog()
-            CATALOG.write_text(json.dumps(raw, ensure_ascii=False, indent=1), encoding="utf-8")
-            print(f"图鉴已抓取：{raw['fetched_at']}  船 {len(raw['ships'])} + 改造 {len(raw['retrofit'])}，皮肤行 {len(raw['skins'])}")
-        except Exception as e:  # noqa: BLE001
-            print(f"抓取失败：{e}")
-            if CATALOG.exists():
-                print("使用本地缓存的 wiki_catalog.json 继续")
-                raw = json.loads(CATALOG.read_text(encoding="utf-8"))
-            else:
-                return 1
+        # 短缓存：图鉴 5 分钟内抓过就直接复用，避免“检查并更新/仅同步图鉴”
+        # 连续点击时每次都联网拉两个大页面（换装图鉴 wikitext 有数 MB）
+        cached_raw = None
+        if CATALOG.exists():
+            try:
+                cached_raw = json.loads(CATALOG.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                cached_raw = None
+        fresh = False
+        if cached_raw:
+            try:
+                ft = cached_raw.get("fetched_at", "")
+                if ft:
+                    fresh = (datetime.now() - datetime.fromisoformat(ft)).total_seconds() < 300
+            except Exception:  # noqa: BLE001
+                fresh = False
+        if fresh:
+            raw = cached_raw
+            print(f"图鉴缓存未过期（{raw['fetched_at']}），跳过联网抓取")
+        else:
+            try:
+                raw = fetch_wiki_catalog()
+                CATALOG.write_text(json.dumps(raw, ensure_ascii=False, indent=1), encoding="utf-8")
+                print(f"图鉴已抓取：{raw['fetched_at']}  船 {len(raw['ships'])} + 改造 {len(raw['retrofit'])}，皮肤行 {len(raw['skins'])}")
+            except Exception as e:  # noqa: BLE001
+                print(f"抓取失败：{e}")
+                if cached_raw is not None:
+                    print("使用本地缓存的 wiki_catalog.json 继续")
+                    raw = cached_raw
+                else:
+                    return 1
 
     wmap = build_wiki_ships(raw)
     print(f"wiki 船表：{len(wmap)} 艘")

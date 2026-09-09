@@ -113,7 +113,7 @@
             </div>
 
             <div class="panel-title">缩放</div>
-            <n-slider v-model:value="scale" :min="20" :max="300" :step="5" />
+            <n-slider v-model:value="scale" :min="20" :max="800" :step="5" />
 
             <div v-if="currentSkin.type === 'live2d' || currentSkin.type === 'spine'" class="panel-title">交互模式</div>
             <div v-if="currentSkin.type === 'live2d' || currentSkin.type === 'spine'" class="mode-toggle">

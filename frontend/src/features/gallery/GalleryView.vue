@@ -346,7 +346,7 @@
             </div>
             <div class="panel-field">
               <label>缩放 <span class="bar-dim">{{ scale }}%</span></label>
-              <n-slider v-model:value="scale" :min="20" :max="300" :step="5" />
+              <n-slider v-model:value="scale" :min="20" :max="800" :step="5" />
             </div>
             <div class="panel-field">
               <label>对齐方式</label>
@@ -629,7 +629,7 @@ function applyWePreset() {
   }
   let applied = 0
   const sc = num(data.scalectrl)
-  if (sc !== null) { scale.value = Math.round(clamp(sc, 20, 300)); applied++ }
+  if (sc !== null) { scale.value = Math.round(clamp(sc, 20, 800)); applied++ }
   const ox = num(data.offsetx)
   if (ox !== null) { offsetX.value = Math.round(clamp(ox, -100, 100)); applied++ }
   const oy = num(data.offsety)

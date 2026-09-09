@@ -54,9 +54,10 @@ class WallpaperLive2DExporter(ExporterPlugin):
         if voice_on:
             try:
                 from core import voice as voice_mod
-                ship_id = voice_mod.ship_id_for(skin.get("painting", ""))
+                painting = skin.get("painting", "")
+                ship_id = voice_mod.ship_id_for(painting)
                 if ship_id:
-                    voice_cfg = voice_mod.export_voice(ship_id, proj / "assets" / "voice")
+                    voice_cfg = voice_mod.export_voice(ship_id, proj / "assets" / "voice", painting=painting)
             except Exception:  # noqa: BLE001
                 voice_cfg = None
         html = render_template(

@@ -114,9 +114,11 @@ def ship_page_avatars(names: list[str]) -> dict[str, str]:
             continue
         for p in data.get("query", {}).get("pages", []):
             t = p.get("title", "")
-            if not (t.startswith("File:") and t.endswith("头像.jpg")):
+            # B站中文 Wiki 命名空间会自动规范化为 "文件:" 或 "File:"
+            prefix = "文件:" if t.startswith("文件:") else ("File:" if t.startswith("File:") else "")
+            if not (prefix and t.endswith("头像.jpg")):
                 continue
-            nm = t[len("File:"):-len("头像.jpg")]
+            nm = t[len(prefix):-len("头像.jpg")]
             ii = p.get("imageinfo") or []
             if ii and ii[0].get("thumburl"):
                 out[nm] = ii[0]["thumburl"]

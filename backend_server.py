@@ -364,13 +364,49 @@ def _read_json(path: Path, default: dict) -> dict:
         return default
 
 
+def _thread_scoped_stream(real, tid: int, buf):
+    """把 sys.stdout/stderr 换成“按线程分流”的对象：工具线程的 print 进 StringIO，
+    其他线程（并发 API 请求）的输出仍落真实流。
+
+    contextlib.redirect_stdout 是进程级替换，长工具（图鉴同步/下载头像）运行期间
+    其他请求线程的 [api] 日志会被一并吸进工具缓冲区，混进响应里的 steps.output。
+    """
+    class _Scoped:
+        def write(self, s):
+            if threading.get_ident() == tid:
+                buf.write(s)
+            else:
+                try:
+                    real.write(s)
+                except Exception:  # noqa: BLE001
+                    pass
+            return len(s)
+
+        def flush(self):
+            if threading.get_ident() != tid:
+                try:
+                    real.flush()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        def isatty(self):
+            return False
+
+        @property
+        def encoding(self):
+            return getattr(real, "encoding", None)
+
+    return _Scoped()
+
+
 def run_tool(name: str, args: list[str] | None = None, timeout: int = 600) -> tuple[int, bytes, bytes]:
     """进程内运行 tools/ 下的脚本模块（打包后无法再用 sys.executable 起子进程）。
 
     tools 模块没有 __init__.py，按文件路径动态加载，避免引入包结构改动。
+    注意：进程内执行意味着 timeout 只是约定上限，无法真正中断卡死的工具；
+    工具自身的网络超时/重试才是兜底。
     """
     with _TOOL_LOCK:
-        import contextlib
         import importlib.util
         import io
 
@@ -380,14 +416,25 @@ def run_tool(name: str, args: list[str] | None = None, timeout: int = 600) -> tu
         spec.loader.exec_module(mod)
         old_argv = sys.argv
         sys.argv = [name] + (args or [])
-        buf = io.StringIO()
+        buf_out = io.StringIO()
+        buf_err = io.StringIO()
+        real_out, real_err = sys.stdout, sys.stderr
+        tid = threading.get_ident()
         try:
-            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            sys.stdout = _thread_scoped_stream(real_out, tid, buf_out)
+            sys.stderr = _thread_scoped_stream(real_err, tid, buf_err)
+            try:
                 rc = mod.main() or 0
+            finally:
+                sys.stdout = real_out
+                sys.stderr = real_err
         finally:
             sys.argv = old_argv
-        out = buf.getvalue().encode("utf-8", "ignore")
-        return rc, out, b""
+        return (
+            rc,
+            buf_out.getvalue().encode("utf-8", "ignore"),
+            buf_err.getvalue().encode("utf-8", "ignore"),
+        )
 
 
 def finish_metadata_update() -> None:
@@ -397,37 +444,44 @@ def finish_metadata_update() -> None:
     refresh_library()
 
 
+def _run_update_step(report: dict, key: str, tool: str, args: list[str], stage: str) -> None:
+    """跑一个元数据更新步骤：先推 SSE 阶段事件（前端按钮下方实时显示），
+    异常也收敛进步骤记录，不让单步崩溃把整个请求打成 500/无响应。"""
+    _emit_stage(stage)
+    try:
+        rc, out, err = run_tool(tool, args)
+    except Exception as e:  # noqa: BLE001
+        rc, out, err = -1, b"", f"{type(e).__name__}: {e}".encode("utf-8", "replace")
+    report["steps"][key] = {
+        "ok": rc == 0,
+        "output": out.decode("utf-8", "ignore")[-3000:],
+        "error": err.decode("utf-8", "ignore")[-800:],
+    }
+    if not report["steps"][key]["ok"]:
+        report["ok"] = False
+
+
 def run_metadata_update() -> dict:
     """增量更新元数据：CDN 新皮肤 → bwiki 皮肤名 → 图鉴中文名，全自动写入并重建。"""
     report: dict = {"ok": True, "steps": {}}
     # 1) CDN 增量：检测新皮肤并写入官方皮肤表
-    rc, out, err = run_tool("update_metadata", ["--apply"], timeout=600)
-    report["steps"]["cdn"] = {
-        "ok": rc == 0,
-        "output": out.decode("utf-8", "ignore")[-3000:],
-        "error": err.decode("utf-8", "ignore")[-800:],
-    }
-    if not report["steps"]["cdn"]["ok"]:
-        report["ok"] = False
+    _run_update_step(report, "cdn", "update_metadata", ["--apply"], "正在检查 CDN 新增皮肤…")
     # 2) 图鉴同步：以舰船图鉴/换装图鉴为准重建 ships/skins 中文名
-    rc, out, err = run_tool("sync_wiki_catalog", timeout=300)
-    report["steps"]["wiki"] = {
-        "ok": rc == 0,
-        "output": out.decode("utf-8", "ignore")[-3000:],
-        "error": err.decode("utf-8", "ignore")[-800:],
-    }
-    if not report["steps"]["wiki"]["ok"]:
-        report["ok"] = False
+    _run_update_step(report, "wiki", "sync_wiki_catalog", [], "正在同步图鉴数据…")
     # 3) 图鉴头像：下载舰船图鉴头像并匹配到角色
-    rc, out, err = run_tool("fetch_avatars", timeout=600)
-    report["steps"]["avatars"] = {
-        "ok": rc == 0,
-        "output": out.decode("utf-8", "ignore")[-2000:],
-        "error": err.decode("utf-8", "ignore")[-800:],
-    }
-    if not report["steps"]["avatars"]["ok"]:
+    _run_update_step(report, "avatars", "fetch_avatars", [], "正在下载图鉴头像…")
+    # 4) 重建本地索引并刷新内存数据
+    _emit_stage("正在重建本地索引…")
+    try:
+        finish_metadata_update()
+    except Exception as e:  # noqa: BLE001
+        report["steps"]["rebuild"] = {
+            "ok": False,
+            "output": "",
+            "error": f"{type(e).__name__}: {e}"[:800],
+        }
         report["ok"] = False
-    finish_metadata_update()
+    _emit_stage("元数据更新完成" if report["ok"] else "元数据更新失败")
     rp = ROOT / "resources" / "metadata" / "update_report.json"
     if rp.exists():
         report["cdn_report"] = _read_json(rp, {})
@@ -439,9 +493,22 @@ def run_metadata_update() -> dict:
 
 def run_wiki_sync() -> dict:
     """仅从两个图鉴页同步角色/皮肤中文名（不做 CDN 检查）。"""
-    rc, out, err = run_tool("sync_wiki_catalog", timeout=300)
-    rc2, out2, err2 = run_tool("fetch_avatars", timeout=600)
-    finish_metadata_update()
+    _emit_stage("正在同步图鉴数据…")
+    try:
+        rc, out, err = run_tool("sync_wiki_catalog", [])
+    except Exception as e:  # noqa: BLE001
+        rc, out, err = -1, b"", f"{type(e).__name__}: {e}".encode("utf-8", "replace")
+    _emit_stage("正在下载图鉴头像…")
+    try:
+        rc2, out2, err2 = run_tool("fetch_avatars", [])
+    except Exception as e:  # noqa: BLE001
+        rc2, out2, err2 = -1, b"", f"{type(e).__name__}: {e}".encode("utf-8", "replace")
+    _emit_stage("正在重建本地索引…")
+    try:
+        finish_metadata_update()
+    except Exception as e:  # noqa: BLE001
+        err = (err.decode("utf-8", "ignore") + f"\nfinish: {type(e).__name__}: {e}").encode("utf-8", "replace")
+    _emit_stage("图鉴同步完成" if rc == 0 and rc2 == 0 else "图鉴同步失败")
     report: dict = {
         "ok": rc == 0 and rc2 == 0,
         "returncode": rc,

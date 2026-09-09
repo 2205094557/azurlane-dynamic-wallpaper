@@ -139,6 +139,7 @@
             仅同步图鉴数据
           </n-button>
         </div>
+        <div v-if="metaStage" class="meta-stage">{{ metaStage }}</div>
         <div v-if="updateResult" class="update-result">
           <div class="group-title">CDN 增量</div>
           <div v-if="(updateResult.cdn_report && updateResult.cdn_report.added || []).length" class="update-added">
@@ -324,6 +325,10 @@ const updating = ref(false)
 const updateResult = ref(null)
 const syncing = ref(false)
 const syncResult = ref(null)
+const metaStage = ref('')
+let metaSource = null
+let metaStageTimer = null
+const META_STEP_NAMES = { cdn: 'CDN 检查', wiki: '图鉴同步', avatars: '头像下载', rebuild: '索引重建' }
 const soundOptions = TIMBRES.map((t) => ({ label: t.name, value: t.id }))
 const soundTimbre = ref(getSoundPrefs().timbre)
 const soundVolume = ref(getSoundPrefs().volume)
@@ -615,10 +620,48 @@ async function clearAll() {
   }
 }
 
+// 数据更新阶段的实时进度：复用后端的 /api/events SSE（与语音下载同机制）。
+// “检查并更新”会串行跑 CDN 检查→图鉴同步→头像下载→索引重建，可能耗时数分钟，
+// 之前只有按钮转圈、没有任何阶段提示，看起来像卡死。
+function openMetaSource() {
+  try {
+    metaSource = new EventSource(sseUrl())
+    metaSource.addEventListener('stage', (e) => {
+      try {
+        const d = JSON.parse(e.data)
+        metaStage.value = d.detail ? `${d.stage}：${d.detail}` : (d.stage || '')
+      } catch (err) {
+        /* 忽略异常事件 */
+      }
+    })
+  } catch (e) {
+    metaSource = null
+  }
+}
+
+function closeMetaSource() {
+  if (metaSource) {
+    metaSource.close()
+    metaSource = null
+  }
+}
+
+function firstFailMsg(res, label) {
+  const st = (res && res.steps) || {}
+  const bad = Object.keys(st).find((k) => st[k] && st[k].ok === false)
+  if (!bad) return ''
+  const name = META_STEP_NAMES[bad] || bad
+  const detail = (st[bad].error || st[bad].output || '').trim()
+  return `${label}失败：${name}${detail ? ' — ' + detail.slice(0, 200) : ''}`
+}
+
 async function updateData() {
+  if (updating.value || syncing.value) return
   updating.value = true
   updateResult.value = null
   syncResult.value = null
+  metaStage.value = '正在连接后端…'
+  openMetaSource()
   try {
     const res = await bridge.updateMetadata()
     updateResult.value = res
@@ -626,23 +669,30 @@ async function updateData() {
       const n = ((res.cdn_report || {}).added || []).length
       const wr = res.wiki_report || {}
       const renames = (wr.renamed_ships || []).length
-      message.success(
-        `CDN 新增 ${n} 个皮肤，图鉴修正 ${renames} 艘角色`,
-      )
+      message.success(`CDN 新增 ${n} 个皮肤，图鉴修正 ${renames} 艘角色`)
       if (res.wiki_report) syncResult.value = { ...res, wiki_report: res.wiki_report }
     } else {
-      message.error((res && res.error) || '更新失败')
+      message.error(firstFailMsg(res, '更新') || ((res && res.error) || '更新失败'))
     }
   } catch (e) {
     message.error(`更新失败：${e.message}`)
   } finally {
+    closeMetaSource()
     updating.value = false
+    // 完成/失败后保留最后阶段文字 3 秒，方便看清收尾动作
+    if (metaStage.value) {
+      clearTimeout(metaStageTimer)
+      metaStageTimer = setTimeout(() => { metaStage.value = '' }, 3000)
+    }
   }
 }
 
 async function syncWiki() {
+  if (updating.value || syncing.value) return
   syncing.value = true
   syncResult.value = null
+  metaStage.value = '正在连接后端…'
+  openMetaSource()
   try {
     const res = await bridge.syncWiki()
     syncResult.value = res
@@ -652,12 +702,17 @@ async function syncWiki() {
       const fixes = (wr.fixed_skins || []).length
       message.success(`图鉴同步完成：修正 ${renames} 艘角色、${fixes} 个皮肤名`)
     } else {
-      message.error((res && res.error) || '同步失败')
+      message.error(firstFailMsg(res, '同步') || ((res && res.error) || '同步失败'))
     }
   } catch (e) {
     message.error(`同步失败：${e.message}`)
   } finally {
+    closeMetaSource()
     syncing.value = false
+    if (metaStage.value) {
+      clearTimeout(metaStageTimer)
+      metaStageTimer = setTimeout(() => { metaStage.value = '' }, 3000)
+    }
   }
 }
 
@@ -670,6 +725,8 @@ onBeforeUnmount(() => {
   clearTimeout(proxyTimer)
   clearTimeout(voiceTimer)
   clearTimeout(cleanBundlesTimer)
+  clearTimeout(metaStageTimer)
+  closeMetaSource()
 })
 </script>
 
@@ -802,6 +859,15 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
+.meta-stage {
+  margin: 8px 0 2px;
+  padding: 8px 12px;
+  background: rgba(64, 128, 255, 0.08);
+  border: 1px solid rgba(64, 128, 255, 0.35);
+  border-radius: 10px;
+  font-size: 12px;
+  color: #4a7fd4;
+}
 .update-result {
   background: rgba(255, 255, 255, 0.5);
   border: 1px solid var(--line);

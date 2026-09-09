@@ -104,7 +104,7 @@ def project_json(
     spine: bool = False,
 ) -> dict:
     # 语义与预览一致：scale 为百分比（100 = 自适应），偏移为画布宽/高百分比
-    scale_ctl = int(_clamp(scale, 20, 300))
+    scale_ctl = int(_clamp(scale, 20, 800))
     ox = int(_clamp(offset_x, -100, 100))
     oy = int(_clamp(offset_y, -100, 100))
 
@@ -134,7 +134,7 @@ def project_json(
         }
 
     properties = {
-        "scalectrl": slider("缩放", scale_ctl, 20, 300, 103, 3),
+        "scalectrl": slider("缩放", scale_ctl, 20, 800, 103, 3),
         "offsetx": slider("水平偏移", ox, -100, 100, 101, 1),
         "offsety": slider("垂直偏移", oy, -100, 100, 102, 2),
         "alignment": {
@@ -194,7 +194,7 @@ def project_json(
 
 def export_defaults(options: dict) -> dict:
     """把预览的缩放/偏移/对齐换算成壁纸 HTML 初始值（与预览语义一致）。"""
-    scale = int(_clamp(int(options.get("scale", 100) or 100), 20, 300))
+    scale = int(_clamp(int(options.get("scale", 100) or 100), 20, 800))
     ox = int(_clamp(int(options.get("offsetX", 0) or 0), -100, 100))
     oy = int(_clamp(int(options.get("offsetY", 0) or 0), -100, 100))
     align = options.get("alignment", 0)
