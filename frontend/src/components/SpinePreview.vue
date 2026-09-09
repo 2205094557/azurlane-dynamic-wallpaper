@@ -435,18 +435,21 @@ function playVoice(label) {
   playVoiceCue(cue, text)
 }
 
-// touch 系互动：点击轮换播 touch 动画（body → head → special → body...），
-// 每个动画播一次自动回 normal（onInteractComplete 处理），并播对应类别语音
+// touch 系与全动作轮换：点击轮换播动作（摸头 ➔ 摸身 ➔ 特殊触摸 ➔ 拖拽 ➔ 换装出场…），
+// 播完自动回 normal 待机，并播放对应类别的官方原声台词与字幕
 let touchIndex = -1
 function cycleTouchInteract() {
   const n = animNames()
-  const order = TOUCH_ANIMS.filter((t) => n.includes(t))
+  // 建立全动作轮换池：优先 Touch 动作，有 drag / change_out 也一并加入轮换队列
+  const candidates = [...TOUCH_ANIMS, 'drag', 'change_out']
+  const order = candidates.filter((t) => n.some((an) => an === t || an.startsWith(t)))
   if (!order.length) return
   touchIndex = (touchIndex + 1) % order.length
   const anim = order[touchIndex]
   playInteractAnim(anim, false)
-  // 动画名 → 语音 label：touch_body/touch_head/touch_special 直接对应 VOICE_BASE
-  playVoice(anim)
+  // 动画名 → 语音 label：touch_* 直接对应，drag 对应 touch_body
+  const vlabel = anim.startsWith('touch') ? anim : 'touch_body'
+  playVoice(vlabel)
 }
 
 // 纯表情皮肤点击切表情时：随机播一句该船的触摸/摸头/特殊触摸语音（作点击音效）。
@@ -1080,33 +1083,17 @@ function onCanvasDown(e) {
     const rect = canvasRef.value.getBoundingClientRect()
     const wp = screenToWorld(e.clientX - rect.left, e.clientY - rect.top)
     const area = hitAreaAt(wp.x, wp.y)
-    // ★ drag 皮肤：直接走本地 drag 状态机（drag→ex→drag_ex→normal）。
-    //   官方 config_client 对 drag 皮肤的规则也是 drag→ex / drag_ex→normal，
-    //   但 playRuleAction 只播 action、不驱动完整状态机（complete 后不自动切
-    //   ex/normal），会导致点击后播完 drag 不切 ex、状态机卡死。
-    //   因此 drag 皮肤必须绕过官方规则分支，走本地 startInteractDrag。
-    if (interactKind() === 'drag') {
-      // ★ 数字表情命中：循环切换表情（叠加到 track1；表情是 duration=0 的
-      //   静态单帧，替换 track0 会变无动作静态 → 卡）
-      if (area && /^\d+$/.test(area.kind) && hasAnim(area.kind)) {
-        cycleExpression()
-        canvasRef.value.style.cursor = 'grabbing'
-        return
-      }
-      // 命中非 drag 区域（如 touch_head 等）：按该动画播一次
-      if (area && area.kind && area.kind !== 'drag' && hasAnim(area.kind)) {
-        playInteractAnim(area.kind, false)
-        playVoice(/^touch/.test(area.kind) ? area.kind : 'touch_body')
-      } else if (hasTouchAnims) {
-        // ★ 关键修复：天津风等皮肤既有 drag 又有完整的 touch 动作（touch_head/touch_body/touch_special）。
-        // 当未命中 drag 专用小判定区时，普通点击触发 touch 动作轮换（摸头/摸身/特殊触摸+对应语音）；
-        // 只有拖动或点中 drag 框时，才触发进入 drag/ex 状态机！
-        cycleTouchInteract()
-      } else {
-        // 无 touch 动作的纯 drag 皮肤 / 未命中：本地 drag 状态机
-        startInteractDrag()
-        playVoice('touch_body')
-      }
+    // ★ 统一触摸轮换模式：普通点击优先触发全动作轮换（摸头 ➔ 摸身 ➔ 特殊触摸 ➔ 拖拽变身）。
+    // 无论是复合皮肤（如天津风兼具 drag 与 touch）还是普通皮肤，点击均轮换播放动作与对应台词，
+    // 不再被极难点中的小 hitbox 或单一 drag 状态机卡死！
+    if (area && /^\d+$/.test(area.kind) && hasAnim(area.kind)) {
+      // 依然保留面部表情点击：点击面部切表情
+      cycleExpression()
+      canvasRef.value.style.cursor = 'grabbing'
+      return
+    }
+    if (hasTouchAnims || hasAnim('drag')) {
+      cycleTouchInteract()
       canvasRef.value.style.cursor = 'grabbing'
       return
     }

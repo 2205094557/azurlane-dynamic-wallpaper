@@ -721,16 +721,23 @@ function cycleExpression() {
   });
 }
 
-// touch 系：点击轮换播 touch 动画（body → head → special），播完自动回 normal
+// touch 系与全动作轮换：点击轮换播动作（摸头 ➔ 摸身 ➔ 特殊触摸 ➔ 拖拽 ➔ 变身出场…），
+// 播完自动回 normal 待机，并播放对应类别的官方原声台词
+var _touchIndex = -1;
 function cycleTouchInteract() {
   var names = animNames0();
+  var candidates = ["touch_head", "touch_body", "touch_special", "drag", "change_out"];
   var order = [];
-  for (var i = 0; i < TOUCH_ANIMS.length; i++) if (names.indexOf(TOUCH_ANIMS[i]) >= 0) order.push(TOUCH_ANIMS[i]);
+  for (var i = 0; i < candidates.length; i++) {
+    var c = candidates[i];
+    if (hasAnim0(c)) order.push(c);
+  }
   if (!order.length) return;
   _touchIndex = (_touchIndex + 1) % order.length;
   var action = order[_touchIndex];
   playInteractAnim(action, false);
-  spinePlayVoice(/^touch/.test(action) ? action : null);
+  var vlabel = action.indexOf("touch") === 0 ? action : "touch_body";
+  spinePlayVoice(vlabel);
 }
 
 // ===== 官方互动规则状态机 =====
@@ -836,23 +843,15 @@ function initInteract() {
       }
       return;
     }
-    // ★ drag 皮肤：先按点击坐标命中面部表情区（数字 hitArea）→ 切表情；
-    //   命中其他/未命中 → 本地 drag 状态机（与预览端 hit-test 一致）。
-    var hasDragA = hasAnim0("drag"), hasExA = hasAnim0("ex");
-    if (hasDragA && hasExA) {
-      var hitName = hitNameAt(e.clientX, e.clientY);
-      if (hitName && /^\d+$/.test(hitName)) {
-        cycleExpression(); // 点脸（表情区）切换表情
-      } else if (hitName === "drag") {
-        startInteractDrag();
-        spinePlayVoice("touch_body");
-      } else if (hasTouchAnim()) {
-        // ★ 天津风等复合皮肤：普通点击优先触发 touch 动作轮换（摸头/摸身/特殊触摸+台词）
-        cycleTouchInteract();
-      } else {
-        startInteractDrag();
-        spinePlayVoice("touch_body");
-      }
+    // ★ 统一触摸轮换模式：普通点击优先触发全动作轮换（摸头 ➔ 摸身 ➔ 特殊触摸 ➔ 拖拽 ➔ 变身）。
+    // 无论是天津风这类复合皮肤还是普通皮肤，点击均轮流播放所有动作与对应台词，不再受小 hitbox 限制！
+    var hitName = hitNameAt(e.clientX, e.clientY);
+    if (hitName && /^\d+$/.test(hitName)) {
+      cycleExpression(); // 点脸（表情区）切换表情
+      return;
+    }
+    if (hasTouchAnim() || hasAnim0("drag")) {
+      cycleTouchInteract();
       return;
     }
     // 官方规则状态机：touch 系 skin 按当前 idle 匹配规则（无规则走下方回退）
