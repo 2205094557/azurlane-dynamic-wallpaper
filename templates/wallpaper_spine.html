@@ -563,6 +563,11 @@ var interactState = "normal"; var _dragSeq = 0; // normal | drag | ex | drag_ex 
 var interactEnabled = false;
 var dragging = false;
 var TOUCH_ANIMS = ["touch_body", "touch_head", "touch_special"];
+function hasTouchAnim() {
+  var names = animNames0();
+  for (var i = 0; i < TOUCH_ANIMS.length; i++) if (names.indexOf(TOUCH_ANIMS[i]) >= 0) return true;
+  return false;
+}
 var _touchIndex = -1;
 // 官方互动规则（config_client）：按当前待机(idle)匹配规则 → 播 action 一次 →
 // 切 change_idle 循环。如 携心夜烛：touch_special 播完进 touch_special_normal
@@ -849,9 +854,15 @@ function initInteract() {
     if (hasDragA) {
       startInteractDrag();
       spinePlayVoice("touch_body");
+    } else if (hasTouchAnim()) {
+      // 有 touch 动画的皮肤：优先触发触摸互动（动画+语音）。
+      // 注意：这类皮肤即使有数字表情，也应走 touch 而非切表情，
+      // 否则点击角色只切表情、不播放互动语音（如安土-午夜的瑰色电梯特殊形态）。
+      cycleTouchInteract();
     } else if (hasExpressions()) {
-      // 互动皮肤但命中不到规则：有表情则切表情
+      // 互动皮肤但命中不到规则且无 touch 动画：有表情则切表情 + 随机语音
       cycleExpression();
+      spinePlayVoiceRandom();
     } else {
       cycleTouchInteract();
     }
