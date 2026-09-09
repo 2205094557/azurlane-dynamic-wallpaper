@@ -220,17 +220,22 @@ def build_wiki_ships(raw: dict) -> dict:
         if faction and not ent["faction"]:
             ent["faction"] = faction
 
-    # 兜底补充：对于刚实装未收录进全量换装大表、但个人词条已有【标题N】的新船，自动补进 skins 列表
+    # 兜底补充：无论新船还是老船，如果个人词条已有【标题N】但换装大表未收录最新的换装，自动追加到 skins 列表
     for title, po in raw.get("ships", {}).items():
         key = norm(title)
         ent = ships.get(key)
-        if not ent or ent.get("skins"):
+        if not ent:
             continue
-        # 如果从自身词条里解析到了皮肤标题
         page_titles = po.get("outfit_titles") or []
-        for i, sname in enumerate(page_titles, 1):
-            ent["skins"].append({"name": sname, "order": f"换装{i}", "theme": ""})
-            print(f"   [单页换装兜底] {title} -> {sname}")
+        existing_names = {s.get("name") for s in ent.get("skins", [])}
+        for sname in page_titles:
+            if sname and sname not in existing_names:
+                # 计算当前是第几个普通换装
+                normal_count = sum(1 for s in ent.get("skins", []) if s.get("order") != "誓约")
+                order_label = f"换装{normal_count + 1}" if normal_count > 0 else "换装"
+                ent["skins"].append({"name": sname, "order": order_label, "theme": ""})
+                existing_names.add(sname)
+                print(f"   [单页换装增量补录] {title} -> {sname} ({order_label})")
     return ships
 
 
