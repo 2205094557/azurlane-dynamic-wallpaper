@@ -31,19 +31,21 @@ def parts_of(skin: dict) -> list[str]:
 
 
 def stem_matches(stem: str, part: str) -> bool:
-    """骨架文件名是否属于某个部件：{part}、{part}_bg（背景）、{part}_T/B/M/F。"""
+    """骨架文件名是否属于某个部件：{part}、{part}_bg（背景）、{part}_T/B/M/F（可带数字如 B2/T2/M2）。"""
     low = stem.lower()
     p = part.lower()
     if low == p or low == p + "_bg":
         return True
     for t in PARTS:
-        if low == p + t.lower() or low == p + "_" + t.lower():
+        tl = t.lower()
+        # 精确匹配或带数字后缀（如 B / B2 / T / T2）
+        if re.fullmatch(re.escape(p) + r"_?" + tl + r"\d*", low):
             return True
     # 容错：个别皮肤骨架文件名与 painting 存在轻微差异（如约克城II原版文件是
     # yukechengIIB.skel，而 painting 是 yuekechengii——少一个 'e'），
     # 严格比对会漏收整个皮肤。去掉尾部部件后缀后做「忽略大小写 + 去 'e'」归一化比较。
-    core = re.sub(r"(?:bg)?[tbmf]$", "", low)
-    pcore = re.sub(r"(?:bg)?[tbmf]$", "", p)
+    core = re.sub(r"(?:bg)?[tbmf]\d*$", "", low)
+    pcore = re.sub(r"(?:bg)?[tbmf]\d*$", "", p)
     return core.replace("e", "") == pcore.replace("e", "")
 
 
