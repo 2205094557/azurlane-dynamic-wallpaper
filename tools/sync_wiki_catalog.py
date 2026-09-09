@@ -64,6 +64,13 @@ VARIANT_SUFFIXES = (
     "_rw", "_bj", "_n_", "_hx", "_dark_shadow", "_shadow", "_s", "_g", "_h",
 )
 
+# 图鉴名 → 无拼音对应关系的 painting 代号（新船代号与中文名脱钩，只能手写映射）。
+# 例：伊14 的图鉴名在 wmap 里是"伊14"（别名十诗），painting 代号是 i14。
+PAINTING_ALIASES = {
+    "i14": "伊14",
+    "i14_2": "伊14",
+}
+
 # 异体字/常见别名统一，用于匹配键
 CHAR_ALIASES = {"倶": "俱", "・": "·", "Ⅱ": "II", "Ⅱ": "II"}
 
@@ -294,8 +301,14 @@ def is_new_ship_base(p: str) -> bool:
 
 
 def find_wiki_ship_for_painting(base: str, wmap: dict, unmatched: set[str]) -> dict | None:
-    """按 代码直配 → 拼音精确 → 拼音前缀 在“尚无本地资源的图鉴船”里找对应船。"""
+    """按 代码直配 → 别名表 → 拼音精确 → 拼音前缀 在“尚无本地资源的图鉴船”里找对应船。"""
     b = base.lower()
+    # 0) 别名表直配（painting 代号与图鉴名无拼音对应：伊14=i14 ↔ 图鉴名"十诗"）
+    alias_cn = PAINTING_ALIASES.get(b)
+    if alias_cn:
+        for key in unmatched:
+            if wmap[key]["name"] == alias_cn or norm(wmap[key]["name"]) == norm(alias_cn):
+                return wmap[key]
     # 1) 代码直配（2b→2B、u2501→U-2501、z14→Z14、22、33、a2…）
     for key in unmatched:
         if norm(wmap[key]["name"]) == norm(b):
