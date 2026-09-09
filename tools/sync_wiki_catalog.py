@@ -56,6 +56,7 @@ CATALOG = MD / "wiki_catalog.json"
 REPORT = MD / "wiki_sync_report.json"
 UPDATE_REPORT = MD / "update_report.json"
 EXTRA_SHIPS = MD / "wiki_extra_ships.json"
+SKIN_PATCHES = MD / "skin_name_patches.json"
 
 # 非独立皮肤的绘画码后缀/标记（变体、特效、敌人资源等）
 VARIANT_SUFFIXES = (
@@ -776,6 +777,17 @@ def build_output(groups: list[dict], assigned: dict[str, str], wmap: dict, curre
                 info = names_by_painting.get(painting)
                 sname = info["name"] if info else (raw if raw else name)
                 stheme = info["theme"] if info else ""
+            # 若有预置的新皮肤补丁（针对 Wiki 换装大表尚未收录的新换装），优先采纳
+            if not is_base and not is_retrofit and SKIN_PATCHES.exists():
+                try:
+                    patches = json.loads(SKIN_PATCHES.read_text(encoding="utf-8"))
+                    patch = patches.get(painting)
+                    if patch and patch.get("name"):
+                        sname = patch["name"]
+                        if patch.get("theme"):
+                            stheme = patch["theme"]
+                except Exception:
+                    pass
             bundle = painting[len(g["base_painting"]):] if painting.lower().startswith(g["base_painting"].lower()) else ""
             if not is_base and not is_retrofit and names_by_painting.get(painting) and raw and raw != names_by_painting[painting]:
                 report["fixed_skins"].append({"ship": name, "painting": painting, "from": raw, "to": names_by_painting[painting]})
