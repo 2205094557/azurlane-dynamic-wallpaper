@@ -843,6 +843,12 @@ function initInteract() {
       var hitName = hitNameAt(e.clientX, e.clientY);
       if (hitName && /^\d+$/.test(hitName)) {
         cycleExpression(); // 点脸（表情区）切换表情
+      } else if (hitName === "drag") {
+        startInteractDrag();
+        spinePlayVoice("touch_body");
+      } else if (hasTouchAnim()) {
+        // ★ 天津风等复合皮肤：普通点击优先触发 touch 动作轮换（摸头/摸身/特殊触摸+台词）
+        cycleTouchInteract();
       } else {
         startInteractDrag();
         spinePlayVoice("touch_body");

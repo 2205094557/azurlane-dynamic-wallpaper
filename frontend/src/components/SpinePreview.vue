@@ -1097,8 +1097,13 @@ function onCanvasDown(e) {
       if (area && area.kind && area.kind !== 'drag' && hasAnim(area.kind)) {
         playInteractAnim(area.kind, false)
         playVoice(/^touch/.test(area.kind) ? area.kind : 'touch_body')
+      } else if (hasTouchAnims) {
+        // ★ 关键修复：天津风等皮肤既有 drag 又有完整的 touch 动作（touch_head/touch_body/touch_special）。
+        // 当未命中 drag 专用小判定区时，普通点击触发 touch 动作轮换（摸头/摸身/特殊触摸+对应语音）；
+        // 只有拖动或点中 drag 框时，才触发进入 drag/ex 状态机！
+        cycleTouchInteract()
       } else {
-        // drag 区域 / 未命中：本地 drag 状态机
+        // 无 touch 动作的纯 drag 皮肤 / 未命中：本地 drag 状态机
         startInteractDrag()
         playVoice('touch_body')
       }
