@@ -1085,17 +1085,25 @@ function onCanvasDown(e) {
     const rect = canvasRef.value.getBoundingClientRect()
     const wp = screenToWorld(e.clientX - rect.left, e.clientY - rect.top)
     const area = hitAreaAt(wp.x, wp.y)
-    // ★ 统一触摸轮换模式：普通点击优先触发全动作轮换（摸头 ➔ 摸身 ➔ 特殊触摸 ➔ 拖拽变身）。
-    // 无论是复合皮肤（如天津风兼具 drag 与 touch）还是普通皮肤，点击均轮换播放动作与对应台词，
-    // 不再被极难点中的小 hitbox 或单一 drag 状态机卡死！
-    if (area && /^\d+$/.test(area.kind) && hasAnim(area.kind)) {
-      // 依然保留面部表情点击：点击面部切表情
-      cycleExpression()
-      canvasRef.value.style.cursor = 'grabbing'
-      return
-    }
-    if (hasTouchAnims || hasAnim('drag')) {
-      cycleTouchInteract()
+    // ★ drag 皮肤经典状态机：
+    // 处于 normal 待机点击 ➔ 触发 drag ➔ 播完自动进 ex 待机循环；
+    // 处于 ex 待机点击 ➔ 触发 drag_ex ➔ 播完自动跳回 normal 待机！
+    if (interactKind() === 'drag') {
+      // 脸部数字表情点击：切表情
+      if (area && /^\d+$/.test(area.kind) && hasAnim(area.kind)) {
+        cycleExpression()
+        canvasRef.value.style.cursor = 'grabbing'
+        return
+      }
+      // 命中非 drag 独立小部件（如明确的 touch_head 部位框）
+      if (area && area.kind && area.kind !== 'drag' && hasAnim(area.kind)) {
+        playInteractAnim(area.kind, false)
+        playVoice(/^touch/.test(area.kind) ? area.kind : 'touch_body')
+      } else {
+        // 点击角色主体：严格执行经典拖拽状态机（normal➔drag➔ex；ex➔drag_ex➔normal）
+        startInteractDrag()
+        playVoice('touch_body')
+      }
       canvasRef.value.style.cursor = 'grabbing'
       return
     }

@@ -843,15 +843,18 @@ function initInteract() {
       }
       return;
     }
-    // ★ 统一触摸轮换模式：普通点击优先触发全动作轮换（摸头 ➔ 摸身 ➔ 特殊触摸 ➔ 拖拽 ➔ 变身）。
-    // 无论是天津风这类复合皮肤还是普通皮肤，点击均轮流播放所有动作与对应台词，不再受小 hitbox 限制！
-    var hitName = hitNameAt(e.clientX, e.clientY);
-    if (hitName && /^\d+$/.test(hitName)) {
-      cycleExpression(); // 点脸（表情区）切换表情
-      return;
-    }
-    if (hasTouchAnim() || hasAnim0("drag")) {
-      cycleTouchInteract();
+    // ★ drag 皮肤经典状态机：
+    // 处于 normal 待机点击 ➔ 触发 drag ➔ 播完自动进 ex 待机循环；
+    // 处于 ex 待机点击 ➔ 触发 drag_ex ➔ 播完自动跳回 normal 待机！
+    var hasDragA = hasAnim0("drag"), hasExA = hasAnim0("ex");
+    if (hasDragA && hasExA) {
+      var hitName = hitNameAt(e.clientX, e.clientY);
+      if (hitName && /^\d+$/.test(hitName)) {
+        cycleExpression(); // 点脸（表情区）切换表情
+      } else {
+        startInteractDrag();
+        spinePlayVoice("touch_body");
+      }
       return;
     }
     // 官方规则状态机：touch 系 skin 按当前 idle 匹配规则（无规则走下方回退）
