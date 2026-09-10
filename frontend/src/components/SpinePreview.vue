@@ -809,7 +809,7 @@ function hitWorldBox(h) {
   const cx = (rootMinX + rootMaxX) / 2 + pos[0]
   const cy = rootMaxY - rs[1] / 2 + pos[1]
   const w = size[0], hh = size[1]
-  return { minX: cx - w / 2, maxX: cx + w / 2, minY: cy - hh / 2, maxY: cy + hh / 2 }
+  return { name: h.name, kind: h.name, minX: cx - w / 2, maxX: cx + w / 2, minY: cy - hh / 2, maxY: cy + hh / 2 }
 }
 function boxToScreen(box, cw, ch) {
   const cam = renderer.camera
@@ -1065,10 +1065,12 @@ function screenToWorld(px, py) {
   }
 }
 function hitAreaAt(wx, wy) {
-  for (const a of hitAreas.value) {
-    const w = a.world
-    if (!w) continue
-    if (wx >= w.minX && wx <= w.maxX && wy >= w.minY && wy <= w.maxY) return a
+  // 无论 showHitAreas 开关是否打开，判定始终优先读取从远端/官方拉取的真实碰撞区域数据
+  const list = remoteHitAreas.length ? remoteHitAreas.map(hitWorldBox) : hitAreas.value.map(a => a.world).filter(Boolean)
+  for (const w of list) {
+    if (wx >= w.minX && wx <= w.maxX && wy >= w.minY && wy <= w.maxY) {
+      return { kind: w.name || w.kind, world: w }
+    }
   }
   return null
 }
