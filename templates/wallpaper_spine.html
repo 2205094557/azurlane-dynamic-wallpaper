@@ -679,8 +679,8 @@ function onInteractComplete(entry) {
   if (!entry || entry.trackIndex !== 0) return;
   if (entry.loop) return; // 循环动画每圈 complete 不处理（ex/normal 由 spine 自动续圈）
   var name = entry.animation ? entry.animation.name : "";
-  if (interactState === "drag") enterInteract("ex");
-  else if (interactState === "drag_ex") enterInteract("normal");
+  if (name.indexOf("drag_ex") === 0 || interactState === "drag_ex") enterInteract("normal");
+  else if (name.indexOf("drag") === 0 || interactState === "drag") enterInteract("ex");
   else if (/^touch_|^login$/.test(name)) playInteractAnim(currentIdle, true);
 }
 function startInteractDrag() {

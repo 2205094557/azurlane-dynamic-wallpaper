@@ -332,10 +332,12 @@ function onInteractComplete(entry) {
   if (!entry || entry.trackIndex !== 0) return
   if (entry.loop) return // 循环动画每圈 complete 不处理（ex/normal 由 spine 自动续圈）
   const name = entry.animation ? entry.animation.name : ''
-  if (interactState === 'drag') {
-    enterInteract('ex')
-  } else if (interactState === 'drag_ex') {
+  // 关键修复：直接根据播完的动画名（name）结合 interactState 判定！
+  // 无论通过拖拽触发还是全动作轮换触发，drag 播完必定进入 ex 循环；drag_ex 播完必定切回 normal。
+  if (name.startsWith('drag_ex') || interactState === 'drag_ex') {
     enterInteract('normal')
+  } else if (name.startsWith('drag') || interactState === 'drag') {
+    enterInteract('ex')
   } else if (/^touch_|^login$/.test(name)) {
     // 官方规则：单次互动动画播完 → 进入 change_idle 待机循环
     // （currentIdle 已在播放时更新为 change_idle；无规则时回 normal）
