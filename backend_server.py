@@ -162,7 +162,7 @@ def skin_files(skin: dict) -> list[Path]:
     e = ROOT / "resources" / "extracted"
     paths: list[Path] = []
     if stype == "spine":
-        paths += [b / "spinepainting" / painting, b / "spinepainting" / f"{painting}_res", e / "spine" / painting]
+        paths += [b / "spinepainting" / painting, b / "spinepainting" / f"{painting}_res", b / "spinepainting" / f"{painting}_bg", e / "spine" / painting]
     elif stype == "live2d":
         paths += [b / "live2d" / painting, e / "live2d" / painting]
     else:
@@ -297,7 +297,7 @@ def _bundle_paths(stype: str, painting: str, depmap: dict | None = None) -> list
     painting = painting.lower()
     paths: list[Path] = []
     if stype == "spine":
-        paths += [b / "spinepainting" / painting, b / "spinepainting" / f"{painting}_res"]
+        paths += [b / "spinepainting" / painting, b / "spinepainting" / f"{painting}_res", b / "spinepainting" / f"{painting}_bg"]
     elif stype == "live2d":
         paths += [b / "live2d" / painting]
     else:
@@ -787,10 +787,19 @@ def download_skin(skin: dict, cancel_event: threading.Event | None = None) -> di
         else:
             csv = cdn.fetch_hash_csv(info.cdn, info.raw_strings["azhash"])
             wanted = {f"spinepainting/{painting}", f"spinepainting/{painting}_res"}
+            # 部分皮肤（如海咲-夜空盛放之花 haixiao_3_doa）的背景是独立 spine 包，
+            # 存放在 CDN 的 {painting}/{painting}bg 路径下，一并下载（清单里没有则自然忽略）
+            wanted.add(f"{painting}/{painting}bg")
             targets = [
                 (r[0], int(r[1]), r[2])
                 for r in (l.split(",") for l in csv.splitlines() if l.strip())
                 if len(r) >= 3 and r[0].lower() in wanted
+            ]
+            # 背景独立包的 CDN 路径带一层目录（{painting}/{painting}bg），
+            # 统一落盘到 bundles/spinepainting/{painting}_bg，让删除/清理逻辑按 painting 归档
+            targets = [
+                (f"spinepainting/{painting}_bg" if p == f"{painting}/{painting}bg" else p, s, m)
+                for (p, s, m) in targets
             ]
 
         for path, size, md5 in targets:
@@ -812,6 +821,14 @@ def download_skin(skin: dict, cancel_event: threading.Event | None = None) -> di
             if src.exists():
                 registry.get("extractors", "spine").extract(
                     str(src), str(extracted_dir / "spine" / painting)
+                )
+            # 独立背景包（海咲-夜空盛放之花等）：背景是单独的 spine 骨架，提取到同一
+            # 目录；build_local_index 按 isBgLayer 规则（*bg 后缀）把它排到背景层
+            bg_bundle = bundles_dir / "spinepainting" / f"{painting}_bg"
+            if bg_bundle.exists():
+                _emit_stage("正在提取背景骨架", detail=f"{painting}_bg")
+                registry.get("extractors", "spine").extract(
+                    str(bg_bundle), str(extracted_dir / "spine" / painting)
                 )
         elif stype == "live2d":
             _emit_stage("正在提取 Live2D 模型", detail=painting)

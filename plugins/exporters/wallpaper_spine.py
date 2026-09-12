@@ -35,8 +35,16 @@ class WallpaperSpineExporter(ExporterPlugin):
         shutil.copy2(WALLPAPER_LAYOUT, proj / "wallpaper-layout.js")
 
         layers = []
+        bg_images = []
         has_login = False
         for layer in skin["asset"]["layers"]:
+            if "skel" not in layer:
+                # 独立背景图图层（*BG.png，无骨架，如海咲-夜空盛放之花）：
+                # 复制进 assets/，由模板铺在角色层下面（与预览 SpinePreview 的 drawBg 同款逻辑）
+                if layer.get("bg"):
+                    shutil.copy2(src_dir / layer["bg"], assets / layer["bg"])
+                    bg_images.append("assets/" + layer["bg"])
+                continue
             skel = (src_dir / layer["skel"]).read_bytes()
             # 自动检测 login 动画：直接在 skel 二进制里搜动画名字符串
             # （比运行时解析轻量；碧蓝 skel 动画名以可读 ASCII 存储）
@@ -114,6 +122,7 @@ class WallpaperSpineExporter(ExporterPlugin):
         html = render_template(
             "wallpaper_spine.html",
             LAYERS_JSON=json.dumps(layers, ensure_ascii=False),
+            BG_IMAGES_JSON=json.dumps(bg_images, ensure_ascii=False),
             TITLE=f"{skin['ship']} · {skin['name']}",
             BG_CSS=bg_css_for_skin(
                 skin, options.get("root"), options.get("bg", "monet"), options.get("bgColor")

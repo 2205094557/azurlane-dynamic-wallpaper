@@ -28,6 +28,7 @@ var VOICE_ON = {{VOICE}};       // 互动语音开关（false=壁纸不播语音
 var INTRO_ON = {{INTRO}};       // 开场动画开关（false=不播 login 入场直接待机）
 var INTERACT_ON = {{INTERACT}}; // 互动开关（false=点击/拖拽不触发动画反应）
 var HIT_AREAS = {{HIT_AREAS_JSON}}; // 交互区域数据（游戏 prefab 提取的碰撞框）
+var BG_IMAGES = {{BG_IMAGES_JSON}}; // 独立背景图（*BG.png，无骨架），铺在角色层下面
 
 var canvas = document.getElementById("canvas");
 var gl = null, renderer = null;
@@ -164,8 +165,8 @@ function isBgLayer(l) {
   return /b(?:g)?\d*$/i.test(l.name.replace(/\.skel$/i, ''));
 }
 
+// 背景层永远先画：layers 顺序来自文件名排序，不保证 B 在前
 function renderOrder() {
-  // 背景层永远先画：layers 顺序来自文件名排序，不保证 B 在前
   var bg = skeletons.filter(isBgLayer);
   var rest = skeletons.filter(function (l) { return !isBgLayer(l); });
   return bg.concat(rest);
@@ -205,6 +206,7 @@ function applyCharacterFit() {
 function buildScene() {
   skeletons = [];
   for (var i = 0; i < pending.length; i++) if (pending[i]) skeletons.push(pending[i]);
+  loadBgImages(); // 独立背景图（若有）：异步加载，渲染循环按已加载的张数铺底
   playAnim(pendingAnim || ANIMATION);
   // 把动画推进到 t=0，用初始姿态构建稳定的边界缓存（避免动画特效撑爆边界）
   skeletons.forEach(function (l) {
@@ -480,6 +482,48 @@ function applyLayout() {
   renderer.camera.position.z = 0;
 }
 
+// ===== 独立背景图（*BG.png，无骨架）=====
+// 与预览 SpinePreview.vue 的 drawBg 同款：背景世界尺寸 = 角色取景框(bounds)，
+// 等比 cover 铺满并外扩 15%，几何中心对齐取景框中心（人物不分离）。
+// 关键：背景 PNG 是直通 alpha（非预乘）——alpha=0 像素 RGB 仍有残留色，必须用
+// SRC_ALPHA 混合，否则残留 RGB 被当不透明绘制，表现为破碎/花屏（铁律 1）。
+var bgImages = [];
+var bgTexCache = null;
+
+function loadBgImages() {
+  if (!BG_IMAGES || !BG_IMAGES.length) return;
+  BG_IMAGES.forEach(function (file) {
+    var im = new Image();
+    im.onload = function () { bgImages.push(im); };
+    im.onerror = function () { console.error("[spine] 背景图加载失败: " + file); };
+    im.src = file;
+  });
+}
+
+function drawBg(img) {
+  if (!renderer || !img) return;
+  if (!bgTexCache || bgTexCache._img !== img) {
+    // 直通 alpha：原样上传（不预乘）
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    bgTexCache = new spine.webgl.GLTexture(gl, img);
+    bgTexCache._img = img;
+  }
+  var bounds = computeBounds();
+  var bw = bounds.maxX - bounds.minX;
+  var bh = bounds.maxY - bounds.minY;
+  if (!bw || !bh) return;
+  var iw = img.width || 1;
+  var ih = img.height || 1;
+  var scale = Math.max(bw / iw, bh / ih) * 1.15;
+  var w = iw * scale;
+  var h = ih * scale;
+  var cx = (bounds.minX + bounds.maxX) / 2;
+  var cy = (bounds.minY + bounds.maxY) / 2;
+  renderer.batcher.setBlendMode(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  renderer.drawTexture(bgTexCache, cx - w / 2, cy - h / 2, w, h);
+  renderer.batcher.setBlendMode(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+}
+
 function render() {
   // 防呆：任何一帧抛错都不能断掉 rAF 链（否则壁纸画面静默定格）。
   // 某层动画/绘制异常只跳过该层并记录，整帧循环继续。
@@ -503,6 +547,10 @@ function render() {
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
     renderer.begin();
+    // 独立背景图先画（铺在全部骨架层下面；渲染器混合模式用完后 drawBg 内自行还原）
+    for (var bi = 0; bi < bgImages.length; bi++) {
+      try { drawBg(bgImages[bi]); } catch (e) { console.error("[spine] bg 异常: " + (e && e.message)); }
+    }
     renderOrder().forEach(function (l) { renderer.drawSkeleton(l.skeleton, true); });
     renderer.end();
   } catch (e) {
