@@ -1,15 +1,12 @@
-import { Application } from '@pixi/app'
-import { Renderer } from '@pixi/core'
-import { InteractionManager } from '@pixi/interaction'
-import { Ticker, TickerPlugin } from '@pixi/ticker'
-import { Live2DModel } from 'pixi-live2d-display/cubism4'
+import { Application, Ticker } from 'pixi.js'
+import { Live2DModel } from 'pixi-live2d-display-lipsyncpatch/cubism4'
 
 // 布局统一模块由 wallpaper-layout.js 注入 window.WallpaperLayout
 const WL = window.WallpaperLayout
 
-Application.registerPlugin(TickerPlugin)
+// pixi.js v7 单包已自动注册 TickerPlugin 与 interaction 插件，无需手动 registerPlugin；
+// Live2DModel 的 autoUpdate 需要知道用哪个 Ticker。
 Live2DModel.registerTicker(Ticker)
-Renderer.registerPlugin('interaction', InteractionManager)
 
 let model = null
 let app = null
@@ -79,17 +76,19 @@ async function start() {
 
   app = new Application({
     view: document.getElementById('canvas'),
-    transparent: true,
+    backgroundAlpha: 0,
     autoStart: true,
     resizeTo: window,
     antialias: true,
   })
   model = await Live2DModel.from(cfg.model, {
     autoUpdate: true,
-    // 关闭库自带的鼠标追踪（autoInteract 会监听 interactionManager 的
-    // pointermove 并自动 focus），改为自定义 mousemove 实现，以便 WE 面板
-    // 「鼠标追踪」开关能实时开/关；自定义互动不依赖 pixi interaction，不受影响。
-    autoInteract: false,
+    // 关闭库自带的鼠标追踪/命中（autoHitTest 会监听 pointermove 并自动 focus），
+    // 改为自定义 mousemove 实现，以便 WE 面板「鼠标追踪」开关能实时开/关；
+    // 自定义互动不依赖 pixi interaction，不受影响。
+    // （0.5.0 起 autoInteract 拆分为 autoHitTest + autoFocus）
+    autoHitTest: false,
+    autoFocus: false,
   })
   model.anchor.set(0.5, 0.5)
   app.stage.addChild(model)

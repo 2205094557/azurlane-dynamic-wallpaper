@@ -15,9 +15,10 @@ export default defineConfig({
   // 显式把库导入指到 frontend/node_modules 下的绝对路径。
   resolve: {
     alias: [
-      { find: 'pixi-live2d-display/cubism4', replacement: path.join(NM, 'pixi-live2d-display/dist/cubism4.es.js') },
-      { find: 'pixi-live2d-display', replacement: path.join(NM, 'pixi-live2d-display/dist/index.es.js') },
-      { find: '@pixi', replacement: path.join(NM, '@pixi') },
+      // Live2D 运行时已迁移：pixi.js v7 + pixi-live2d-display-lipsyncpatch 0.5.0
+      // （0.4.0 内置的 Cubism 4.x 框架渲染不了最新代 Cubism 5 模型，会整模黑屏）
+      { find: 'pixi-live2d-display-lipsyncpatch/cubism4', replacement: path.join(NM, 'pixi-live2d-display-lipsyncpatch/dist/cubism4.es.js') },
+      { find: 'pixi.js', replacement: path.join(NM, 'pixi.js/dist/pixi.mjs') },
     ],
   },
   build: {
