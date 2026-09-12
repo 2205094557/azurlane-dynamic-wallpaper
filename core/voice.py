@@ -36,16 +36,28 @@ CUE_FOR_LABEL = {
 IDLE_CUE_RE = re.compile(r"^main_\d+$")
 
 
+def base_ship_key(painting: str) -> str:
+    """从 painting 解析出船的基础 key（对应 voice_ships.json 的键）。
+
+    支持常规换装（如 aisaikesi_9 -> aisaikesi）与
+    联动/阵营中缀换装（如 haixiao_3_doa -> haixiao_doa，qiannai_2_doa -> qiannai_doa，
+    lala_2_tolove -> lala_tolove，zi_2_shanluan -> zi_shanluan）。
+    """
+    low = (painting or "").lower()
+    k = re.sub(r"_\d+$", "", low)
+    return re.sub(r"_\d+(_[a-z]+)$", r"\1", k)
+
+
 def ship_id_for(painting: str) -> int | None:
-    """painting（如 liekexingdunii_2）→ 船 key → shipGroupId。"""
+    """painting（如 liekexingdunii_2 或 haixiao_3_doa）→ 船 key → shipGroupId。"""
     if not painting:
         return None
-    key = re.sub(r"_\d+$", "", painting).lower()
     try:
         data = json.loads(VOICE_SHIPS.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return None
-    gid = data.get(key)
+    low = painting.lower()
+    gid = data.get(low) or data.get(re.sub(r"_\d+$", "", low)) or data.get(base_ship_key(low))
     return int(gid) if gid else None
 
 
@@ -63,15 +75,16 @@ def words_for(painting: str) -> dict:
         data = json.loads((METADATA / "voice_words.json").read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return {}
-    hit = data.get(painting)
+    low = painting.lower()
+    hit = data.get(low)
     if not hit:
-        key = re.sub(r"_\d+$", "", painting).lower()
+        key = base_ship_key(low)
         hit = data.get(key, {})
     if not isinstance(hit, dict):
         hit = {}
     # 缺 headtouch 时：同船其它皮肤（前缀相同，含基础皮）若有，借用该文本
     if not hit.get("headtouch"):
-        prefix = re.sub(r"_\d+$", "", painting).lower()
+        prefix = base_ship_key(low).split("_")[0]
         for k, v in data.items():
             if isinstance(v, dict) and v.get("headtouch") and k.startswith(prefix):
                 hit = dict(hit)
@@ -175,11 +188,12 @@ def first_l2d_painting(ship: str) -> str | None:
 
 
 def skin_voice_n(painting: str) -> int:
-    """painting（u2501_2）→ 换装序号 N（1=第一个换装；0=基础皮）。
+    """painting（u2501_2 或 haixiao_3_doa）→ 换装序号 N（1=第一个换装；0=基础皮）。
 
     cv-{shipId}.b 里 {base}_{N} 是第 N 个换装皮肤的专属语音（touch_1_1=touch_1_2…）。
+    常规换装：_2 -> N=1；中缀换装：_3_doa -> N=2。
     """
-    m = re.search(r"_(\d+)$", painting or "")
+    m = re.search(r"_(\d+)(?:_[a-z]+)?$", painting or "")
     return (int(m.group(1)) - 1) if m else 0
 
 
