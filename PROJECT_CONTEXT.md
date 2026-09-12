@@ -58,8 +58,18 @@
 - 为 **天津风**（`tianjinfeng`，船只编号 `30119`）、**安土**（`antu`，`30409`）、**虎**（`hu`，`20238`）、**伊14**（`i14`，`31703`）逆向提取官方 CDN 语音包；
 - 补全 `resources/metadata/voice_words.json` 中的中文台词文本（摸头、触摸、特殊触摸、待机等多段台词），实现了发声与字幕气泡同步展示。
 
-### 6. 超大模型缩放支持
+### 7. 超大模型缩放支持
 - 将 Wallpaper Engine 导出壁纸及预览端的缩放滑块上限由 300% 提升至 800%（`MAX_SCALE = 800`），完美适配 10000x8000 分辨率级别的超大 Live2D/Spine 模型。
+
+### 8. 黑之女神切表情眼睛消失修复 (`571dc63`)
+- **问题**：BLACK★ROCK SHOOTER「黑之女神」点击切表情，循环到表情 3 时眼睛消失（眼区变空白皮肤）。
+- **根因**：`cycleExpression` 切表情前只 `clearTrack(1)`——spine 的 clearTrack 只停用动画、**不撤销已写入插槽的附件**，上一表情对眼部附件的隐藏残留，导致表情 3 的闭眼附件叠不上去。
+- **修复**：`clearTrack(1)` 后补 `setSlotsToSetupPose()` 显式还原插槽（与 playAnimation/playInteractAnim 分支一致），预览 `SpinePreview.vue` 与导出 `wallpaper_spine.html` 双端同步。无头逐表情截图回归正常。
+
+### 9. 皮肤缺背景修复（独立背景包）(`7ca723a`)
+- **问题**：海咲「夜空盛放之花」立绘没有背景。
+- **根因**：该皮肤背景是**独立 CDN 包** `haixiao_3_doa/haixiao_3_doabg`（纯背景图 Texture2D，非骨架），下载流程只取了 `spinepainting/{painting}` 与 `_res`，从没下载它；导出器遇到 `{"bg": png}` 图层还会 KeyError 崩溃。
+- **修复**：① 下载流程补下独立背景包（落盘 `spinepainting/{painting}_bg`，提取进同一目录，`build_local_index` 自动生成 `{"bg": ...}` 图层；删除/清理路径同步）；② 导出器复制背景图并注入 `BG_IMAGES`；③ 模板新增 `loadBgImages`/`drawBg`，镜像预览逻辑（取景框 cover + 15% 外扩 + 直通 alpha 用 SRC_ALPHA 混合，铁律 1）。预览挂载与导出壁纸无头渲染均验证背景正常，既有 13 个 bg 图层皮肤导出回归通过。
 
 ---
 
