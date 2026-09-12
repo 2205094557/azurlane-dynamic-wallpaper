@@ -71,6 +71,17 @@
 - **根因**：该皮肤背景是**独立 CDN 包** `haixiao_3_doa/haixiao_3_doabg`（纯背景图 Texture2D，非骨架），下载流程只取了 `spinepainting/{painting}` 与 `_res`，从没下载它；导出器遇到 `{"bg": png}` 图层还会 KeyError 崩溃。
 - **修复**：① 下载流程补下独立背景包（落盘 `spinepainting/{painting}_bg`，提取进同一目录，`build_local_index` 自动生成 `{"bg": ...}` 图层；删除/清理路径同步）；② 导出器复制背景图并注入 `BG_IMAGES`；③ 模板新增 `loadBgImages`/`drawBg`，镜像预览逻辑（取景框 cover + 15% 外扩 + 直通 alpha 用 SRC_ALPHA 混合，铁律 1）。预览挂载与导出壁纸无头渲染均验证背景正常，既有 13 个 bg 图层皮肤导出回归通过。
 
+### 10. 联动中缀皮肤语音映射与海咲全套专属语音补全 (`5d3befd`)
+- **问题**：海咲「夜空盛放之花」（`haixiao_3_doa`）没有语音。
+- **根因**：
+  - DOA / ToLove / 闪乱神乐等联动皮肤的代号命名是 `_数字_标签`（如 `haixiao_3_doa`、`qiannai_2_doa`、`lala_2_tolove`），数字位于**中缀**；
+  - `core/voice.py` 之前只用 `re.sub(r"_\d+$", "", painting)` 去除尾部数字，无法剥离中缀数字，导致 `haixiao_3_doa` 无法还原为 `haixiao_doa`（船只编号 `1060004`），全部 24 个联动换装被误判为“无语音”并跳过下载与播放；
+  - `skin_voice_n` 同样只识别尾部数字，导致专属换装序号识别失败（换装2 的 `_2` 专属台词无法被 `pick_cue` 选中）。
+- **修复**：
+  - `core/voice.py` 增加 `base_ship_key` 与中缀去除正则（`re.sub(r"_\d+(_[a-z]+)$", r"\1", k)`），完美支持中缀数字剥离，一举打通全部 24 个联动皮肤的语音映射；
+  - `skin_voice_n` 同步支持中缀数字识别（`haixiao_3_doa` -> `N=2`）；
+  - 从官方 CDN 下载海咲官方语音包 `cv-1060004.b` 并解码提取全套 22 条专属语音，准确命中专属换装台词：`touch_1_2`（泳装害羞）、`touch_2_2`（揉脚踝）、`login_2`（脚伤喊疼）、`home_2`（让指挥官休息），台词字幕同步完美展示。
+
 ---
 
 ## 三、开发与维护铁律（必读）
