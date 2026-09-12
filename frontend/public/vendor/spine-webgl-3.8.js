@@ -4893,7 +4893,7 @@ var spine;
 			var chars = "";
 			var charCount = 0;
 			for (var i = 0; i < byteCount;) {
-				var b = this.readByte();
+				var b = this.readByte() & 0xFF; // 无符号化：readByte 返回有符号 int8，≥0x80 的 UTF-8 首字节为负，>>4 永远匹配不上 2/3 字节分支（中文附件名解成乱码 → Region not found in atlas）
 				switch (b >> 4) {
 					case 12:
 					case 13:
