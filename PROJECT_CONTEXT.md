@@ -80,7 +80,14 @@
 - **修复**：
   - `core/voice.py` 增加 `base_ship_key` 与中缀去除正则（`re.sub(r"_\d+(_[a-z]+)$", r"\1", k)`），完美支持中缀数字剥离，一举打通全部 24 个联动皮肤的语音映射；
   - `skin_voice_n` 同步支持中缀数字识别（`haixiao_3_doa` -> `N=2`）；
-  - 从官方 CDN 下载海咲官方语音包 `cv-1060004.b` 并解码提取全套 22 条专属语音，准确命中专属换装台词：`touch_1_2`（泳装害羞）、`touch_2_2`（揉脚踝）、`login_2`（脚伤喊疼）、`home_2`（让指挥官休息），台词字幕同步完美展示。
+  - 从官方 CDN 下载海咲官方语音包 `cv-1060004.b` 并解码提取全套 22 条专属语音，准确命中专属换装台词：`touch_1_2`（泳装害羞）、`touch_2_2`（揉脚踝）、`login_2`（脚伤喊疼）、`home_2`（让指挥官休息），台词字幕同步展示。
+
+### 2026-09-12 修复三项（本轮会话）
+
+1. **触摸互动播完卡住不回待机**（午夜休憩线 kansasi_2 等）：这类皮肤动画名是**裸名 `touch`**（无下划线后缀），`onInteractComplete` 的判定正则 `/^touch_|^login$/` 匹配不上，播完谁也不切回 normal。预览 `SpinePreview.vue` 与导出模板 `wallpaper_spine.html` 双端改 `/^touch(?:_|$)|^login$/`，互动类型检测/轮换池同步识别裸名 `touch`（只按精确名入池，防止 `touch_body` 误命中），`VOICE_BASE` 补 `touch → touch_body`。
+2. **纯表情皮肤点击不切表情**（入浴的小恶魔 lingyangzhe3_2 等）：数据集无 hitAreas 时预览生成的整体兜底框 kind=`__all__` 在"无官方规则+命中区域"分支里解析不出动画，掉进空的 `cycleTouchInteract()` 什么都不做（仅"交互区域"开关开启时触发；导出模板路径本就正常）。`SpinePreview.vue` 该分支新增表情回落：解析不出 drag/触摸/具名动画时 `cycleExpression()` + 随机互动语音，与"未命中区域"路径行为对齐。
+3. **怨仇（yuanchou）预览报 "Region not found in atlas: ￥ﾛﾾ￥ﾱﾂ 664"**：vendored spine-webgl-3.8.js 的 `BinaryInput.readString` 里 `readByte()` 返回有符号 int8 且缺官方实现的 `& 0xFF` 掩码，≥0x80 的 UTF-8 首字节为负导致 `b >> 4` 永远走 default 单字节分支，skel 里的中文附件名（"图层 664"）解成乱码对不上 atlas（atlas 侧经 `fetch().text()` UTF-8 读取没问题）。三份运行时副本（`templates/vendor/`、`frontend/public/vendor/`、`frontend/dist/vendor/`）同步修复；约 270+ 个 skel 含 CJK 字节，运行时级修复一次全覆盖。
+4. **同期并行改动**（ASMR 皮肤支持）：`asmr_NNN` 系列互动动画识别与播完回待机、跨层动画名并集（双层皮肤表情/互动在 asmr 层）、`cycleExpression` 层内存在性守卫、`core/voice.py` 语音映射容忍 `_g`（改造）/`_h`（誓约）/`_asmr`（ASMR 分包）纯字母后缀（META 独立船不回退），附 `tools/verify_asmr_interact.py` 验证脚本。
 
 ---
 

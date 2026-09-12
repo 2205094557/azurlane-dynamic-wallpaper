@@ -49,7 +49,13 @@ def base_ship_key(painting: str) -> str:
 
 
 def ship_id_for(painting: str) -> int | None:
-    """painting（如 liekexingdunii_2 或 haixiao_3_doa）→ 船 key → shipGroupId。"""
+    """painting（如 liekexingdunii_2 或 haixiao_3_doa）→ 船 key → shipGroupId。
+
+    额外容忍纯字母后缀：`_g`（改造，如 yanzhan_g）、`_h`（誓约，如 qiershazhi_h）、
+    `_asmr`（ASMR 分包，如 hu_2_asmr）在游戏里共用本体的 cv 语音包，
+    按去掉后缀的本体 key 查映射。`_alter`（META）不在此列——META 是独立船、
+    有自己的 CV，错误回退到本体只会播错台词，保持无映射。
+    """
     if not painting:
         return None
     try:
@@ -57,8 +63,15 @@ def ship_id_for(painting: str) -> int | None:
     except Exception:  # noqa: BLE001
         return None
     low = painting.lower()
-    gid = data.get(low) or data.get(re.sub(r"_\d+$", "", low)) or data.get(base_ship_key(low))
-    return int(gid) if gid else None
+    candidates = [low, re.sub(r"_\d+$", "", low), base_ship_key(low)]
+    # 纯字母后缀（改造/誓约/ASMR）：去后缀后按常规换装规则再查一遍
+    stripped = re.sub(r"_(?:g|h|asmr)$", "", low)
+    if stripped != low:
+        candidates += [stripped, re.sub(r"_\d+$", "", stripped), base_ship_key(stripped)]
+    for key in candidates:
+        if key and data.get(key):
+            return int(data[key])
+    return None
 
 
 def words_for(painting: str) -> dict:
