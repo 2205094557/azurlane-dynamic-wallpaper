@@ -42,7 +42,19 @@
 - **根因**：`tools/build_local_index.py` 中的图层匹配规则只匹配单字母 `_T / _B / _M`，将天津风关键的第二背景层 `tianjinfeng_2B2.skel`（5063x5501 尺寸）误判过滤。
 - **修复方案**：将图层正则升级为支持数字后缀（`r"_?[tbmf]\d*"`），使全部 5 个骨架层（`2B`, `2B2`, `主控`, `2M`, `2T`）完整入库并优先渲染背景层。
 
-### 5. 新增船只全套语音与台词气泡补全
+### 5. 吾妻「心向何方的指导课」黑屏修复 —— Live2D 运行时整体迁移 (`596c52b`)
+- **问题**：吾妻-心向何方的指导课（`wuqi_3`，Live2D）下载后预览/导出整模黑屏，无任何报错。
+- **根因**：模型数据、贴图、动作、物理全部正常（逐项验证过），但 `pixi-live2d-display 0.4.0` 内置的 **Cubism 4.x 时代框架**渲染不了最新代 Cubism 编辑器导出的 moc（2026 年起的新皮肤陆续会用新格式导出）——绘制调用正常发生但输出全黑。
+- **修复**：运行时整体迁移 → **pixi.js v7.4.3 + pixi-live2d-display-lipsyncpatch 0.5.0-ls-8**（维护活跃的分支，内置新框架）：
+  - `Live2DPreview.vue` 与 `templates/live2d_app_src.js` 双端同步改 imports（`@pixi/*` 模块包 → `pixi.js` 单包；`pixi-live2d-display` → `pixi-live2d-display-lipsyncpatch`）；
+  - `autoInteract: false` → `autoHitTest: false, autoFocus: false`（0.5.0 拆分）；Application `transparent: true` → `backgroundAlpha: 0`；
+  - pixi v7 单包自动注册 TickerPlugin/interaction，手动 registerPlugin 已删；`Live2DModel.registerTicker(Ticker)` 保留；
+  - Cubism Core 换官方最新版（`frontend/public/vendor/` 与 `templates/vendor/` 两处同步，模板构建经 `vite.live2d.config.mjs` 的 alias 指向新包）；
+  - 改 `live2d_app_src.js` 后已重建 `templates/live2d-app.js`（铁律 6）。
+- **回归**：26 个本地 L2D 模型（含全部 18 个 moc3 v5）无头 Edge 截图逐个验证全部正常；互动/语音/循环逻辑 API（motionManager.groups、setIsLoop、focusController 等）在 0.5.0 均存在，未改行为。
+- **注意**：打包版需重新 `build_pack.py` 才会带上新运行时；旧包仍黑屏。
+
+### 6. 新增船只全套语音与台词气泡补全（此前会话）
 - 为 **天津风**（`tianjinfeng`，船只编号 `30119`）、**安土**（`antu`，`30409`）、**虎**（`hu`，`20238`）、**伊14**（`i14`，`31703`）逆向提取官方 CDN 语音包；
 - 补全 `resources/metadata/voice_words.json` 中的中文台词文本（摸头、触摸、特殊触摸、待机等多段台词），实现了发声与字幕气泡同步展示。
 
