@@ -135,7 +135,9 @@ async function loadLayer(cfg) {
   skeleton.setSkin(bestSkin(data))
   skeleton.setSlotsToSetupPose()
   skeleton.updateWorldTransform()
-  const state = new spine.AnimationState(new spine.AnimationStateData(data))
+  const stateData = new spine.AnimationStateData(data)
+  stateData.defaultMix = 0.2
+  const state = new spine.AnimationState(stateData)
   return { skeleton, state, data, name: cfg.skel }
 }
 
@@ -218,10 +220,14 @@ function playAnimation(name) {
         const def = pickAnim(l.data)
         if (def) l.state.setAnimation(0, def, true)
       }
-      l.state.setAnimation(1, name, false)
+      const e = l.state.setAnimation(1, name, false)
+      if (e) e.mixDuration = 0
     } else {
       // 常规动作：替换 track 0，循环播放；同时清掉 track 1 的表情残留
-      l.state.clearTrack(1)
+      if (l.state.getCurrent(1)) {
+        l.state.clearTrack(1)
+        l.skeleton.setSlotsToSetupPose()
+      }
       l.state.setAnimation(0, name, true)
     }
   }
@@ -301,12 +307,11 @@ function playInteractAnim(name, loop) {
   for (const l of layers) {
     if (!l.skeleton) continue
     if (!l.data.animations.some((a) => a.name === target)) continue
-    // 先清 track1（表情）并复位骨架到 setup pose：表情的 AttachmentTimeline 已把
-    // 眉毛/眼等附件切走，仅 clearTrack(1) 不会还原 attachment —— 必须 setToSetupPose
-    // 复位表情切过的附件，下一帧 state.apply 会重新应用 track0 互动动画。
-    l.state.clearTrack(1)
-    l.skeleton.setToSetupPose()
-    l.skeleton.updateWorldTransform()
+    // 仅在 track1 存在表情时才清空 track1 并复位插槽附件，避免无表情时误重置骨架引发 1 帧姿态卡顿
+    if (l.state.getCurrent(1)) {
+      l.state.clearTrack(1)
+      l.skeleton.setSlotsToSetupPose()
+    }
     l.state.setAnimation(0, target, loop)
   }
 }
@@ -1121,7 +1126,8 @@ function onCanvasDown(e) {
             if (!l.data.animations.some((a) => a.name === kindName)) continue
             const cur = l.state.getCurrent(0)
             if (!cur) { const d2 = pickAnim(l.data); if (d2) l.state.setAnimation(0, d2, true) }
-            l.state.setAnimation(1, kindName, false)
+            const d = l.state.setAnimation(1, kindName, false)
+            if (d) d.mixDuration = 0
           }
           canvasRef.value.style.cursor = 'grabbing'
           return
@@ -1215,7 +1221,8 @@ function cycleExpression() {
     // 先清 track1（把上一张表情切过的附件全部还原），避免新表情叠在旧表情残留上
     l.state.clearTrack(1)
     if (exprIndex < exprs.length) {
-      l.state.setAnimation(1, exprs[exprIndex], false)
+      const e = l.state.setAnimation(1, exprs[exprIndex], false)
+      if (e) e.mixDuration = 0
     }
   }
 }

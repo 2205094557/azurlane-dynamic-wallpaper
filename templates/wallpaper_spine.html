@@ -89,7 +89,9 @@ function loadLayer(idx) {
       skeleton.setSkin(bestSkin(data));
       skeleton.setSlotsToSetupPose();
       skeleton.updateWorldTransform();
-      var state = new spine.AnimationState(new spine.AnimationStateData(data));
+      var stateData = new spine.AnimationStateData(data);
+      stateData.defaultMix = 0.2;
+      var state = new spine.AnimationState(stateData);
       pending[idx] = { skeleton: skeleton, state: state, data: data, name: cfg.name };
     } catch (e) { showError("layer " + cfg.name + ": " + e.message); return; }
     loadedCount++;
@@ -140,10 +142,14 @@ function playAnim(name) {
         var def = pickAnim(l.data);
         if (def) l.state.setAnimation(0, def, true);
       }
-      l.state.setAnimation(1, shared, false);
+      var e = l.state.setAnimation(1, shared, false);
+      if (e) e.mixDuration = 0;
     } else {
       // 常规动作：替换 track 0，循环播放；同时清掉 track 1 的表情残留
-      l.state.clearTrack(1);
+      if (l.state.getCurrent(1)) {
+        l.state.clearTrack(1);
+        l.skeleton.setSlotsToSetupPose();
+      }
       l.state.setAnimation(0, shared, true);
     }
   });
@@ -658,10 +664,11 @@ function playInteractAnim(name, loop) {
   skeletons.forEach(function (l) {
     if (!l.skeleton) return;
     if (!l.data.animations.some(function (a) { return a.name === target; })) return;
-    // 表情叠加修复：清 track1 后复位骨架到 setup pose，还原表情切走的附件
-    l.state.clearTrack(1);
-    l.skeleton.setToSetupPose();
-    l.skeleton.updateWorldTransform();
+    // 仅在 track1 存在表情时才清空 track1 并复位插槽附件，避免无表情时误重置骨架引发 1 帧姿态卡顿
+    if (l.state.getCurrent(1)) {
+      l.state.clearTrack(1);
+      l.skeleton.setSlotsToSetupPose();
+    }
     l.state.setAnimation(0, target, loop);
   });
 }
@@ -717,7 +724,10 @@ function cycleExpression() {
     }
     // 先清 track1（把上一张表情切过的附件全部还原），避免新表情叠在旧表情残留上
     l.state.clearTrack(1);
-    if (_exprIndex < exprs.length) l.state.setAnimation(1, exprs[_exprIndex], false);
+    if (_exprIndex < exprs.length) {
+      var e = l.state.setAnimation(1, exprs[_exprIndex], false);
+      if (e) e.mixDuration = 0;
+    }
   });
 }
 
