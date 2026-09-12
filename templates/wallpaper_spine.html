@@ -620,7 +620,8 @@ var TOUCH_ANIMS = ["touch_body", "touch_head", "touch_special"];
 function hasTouchAnim() {
   var names = animNames0();
   for (var i = 0; i < TOUCH_ANIMS.length; i++) if (names.indexOf(TOUCH_ANIMS[i]) >= 0) return true;
-  return false;
+  if (names.indexOf("touch") >= 0) return true; // 裸名 touch（kansasi_2 午夜休憩线等）
+  return names.some(function (a) { return /^asmr_\d+$/.test(a); }); // ASMR 互动皮肤（jishang_3 等）
 }
 var _touchIndex = -1;
 // 官方互动规则（config_client）：按当前待机(idle)匹配规则 → 播 action 一次 →
@@ -629,8 +630,18 @@ var _touchIndex = -1;
 var INTERACT_RULES = {{INTERACT_RULES_JSON}};
 var currentIdle = "normal"; // 当前待机动画（规则匹配键）
 function animNames0() {
-  if (!skeletons.length || !skeletons[0].data) return [];
-  return skeletons[0].data.animations.map(function (a) { return a.name; });
+  // 所有骨架层动画名的并集。ASMR 双层皮肤两层动画名不同
+  // （如 jishang_3：人物层 normal+数字表情，asmr 层 asmr_NNN 互动），
+  // 只取第一层会漏掉另一层的表情/互动动画
+  var names = [];
+  for (var i = 0; i < skeletons.length; i++) {
+    var sd = skeletons[i].data;
+    if (!sd) continue;
+    for (var j = 0; j < sd.animations.length; j++) {
+      if (names.indexOf(sd.animations[j].name) < 0) names.push(sd.animations[j].name);
+    }
+  }
+  return names;
 }
 function hasAnim0(name) {
   var names = animNames0();
@@ -643,6 +654,9 @@ function isInteractiveSkin() {
   var names = animNames0();
   if (hasAnim0("drag") && (names.indexOf("ex") >= 0 || names.some(function (a) { return a.indexOf("ex") === 0; }))) return true;
   for (var i = 0; i < TOUCH_ANIMS.length; i++) if (names.indexOf(TOUCH_ANIMS[i]) >= 0) return true;
+  // 裸名 touch（geliqiya_3 间谍行动大失败等）/ asmr_NNN（jishang_3 Milk&Kiss 等 ASMR 皮肤）
+  if (names.indexOf("touch") >= 0) return true;
+  if (names.some(function (a) { return /^asmr_\d+$/.test(a); })) return true;
   return names.indexOf("login") >= 0;
 }
 function hitWorldBox(h) {
@@ -685,15 +699,13 @@ function playInteractAnim(name, loop) {
   for (var i = 0; i < skeletons.length; i++) if (skeletons[i].skeleton) { first = skeletons[i]; break; }
   if (!first) return;
   // 前缀枚举：精确名优先，否则所有 name 开头动画（drag → drag1/drag2/drag3）——
+  // 跨层并集里找（ASMR 皮肤的 asmr_NNN 在 asmr 层，人物层没有）
   var list = [];
-  var hasExact = false;
-  for (var a = 0; a < first.data.animations.length; a++) {
-    if (first.data.animations[a].name === name) { hasExact = true; break; }
-  }
-  if (hasExact) list = [name];
+  var allNames = animNames0();
+  if (allNames.indexOf(name) >= 0) list = [name];
   else {
-    for (var b = 0; b < first.data.animations.length; b++) {
-      var nm = first.data.animations[b].name;
+    for (var b = 0; b < allNames.length; b++) {
+      var nm = allNames[b];
       if (nm.indexOf(name) === 0 && nm.indexOf(name + '_') !== 0) list.push(nm);
     }
   }
@@ -736,7 +748,9 @@ function onInteractComplete(entry) {
   var name = entry.animation ? entry.animation.name : "";
   if (name.indexOf("drag_ex") === 0 || interactState === "drag_ex") enterInteract("normal");
   else if (name.indexOf("drag") === 0 || interactState === "drag") enterInteract("ex");
-  else if (/^touch_|^login$/.test(name)) playInteractAnim(currentIdle, true);
+  // /^touch(?:_|$)/ 同时匹配裸名 touch（如 kansasi_2 午夜休憩线动画名就叫 touch）；
+  // asmr_NNN（jishang_3 Milk&Kiss 等 ASMR 皮肤互动）播完同样回待机
+  else if (/^touch(?:_|$)|^login$/.test(name) || /^asmr_\d+$/.test(name)) playInteractAnim(currentIdle, true);
 }
 function startInteractDrag() {
   if (!interactEnabled) return;
@@ -744,23 +758,31 @@ function startInteractDrag() {
   else enterInteract("drag");
 }
 // 皮肤是否有数字表情动画（duration=0 的 AttachmentTimeline 表情集）
+// 跨层扫描：ASMR 双层皮肤（jishang_3 等）的表情在人物层，第一层可能是 asmr 层
 function hasExpressions() {
-  var sd = skeletons.length && skeletons[0].data ? skeletons[0].data : null;
-  if (!sd) return false;
-  for (var k = 0; k < sd.animations.length; k++) {
-    var a = sd.animations[k];
-    if (/^\d+$/.test(a.name) && a.duration <= 0) return true;
+  for (var s = 0; s < skeletons.length; s++) {
+    var sd0 = skeletons[s].data;
+    if (!sd0) continue;
+    for (var k = 0; k < sd0.animations.length; k++) {
+      var a = sd0.animations[k];
+      if (/^\d+$/.test(a.name) && a.duration <= 0) return true;
+    }
   }
   return false;
 }
 // 纯表情皮肤：点击循环切换全部数字表情（1→2→…→无表情→1）
 var _exprIndex = -1;
 function cycleExpression() {
-  var sd = skeletons.length && skeletons[0].data ? skeletons[0].data : null;
-  if (!sd) return;
+  // 跨层收集全部数字表情（ASMR 双层皮肤的表情在人物层）
   var exprs = [];
-  for (var k = 0; k < sd.animations.length; k++) {
-    if (/^\d+$/.test(sd.animations[k].name) && sd.animations[k].duration <= 0) exprs.push(sd.animations[k].name);
+  for (var s = 0; s < skeletons.length; s++) {
+    var sd = skeletons[s].data;
+    if (!sd) continue;
+    for (var k = 0; k < sd.animations.length; k++) {
+      if (/^\d+$/.test(sd.animations[k].name) && sd.animations[k].duration <= 0) {
+        if (exprs.indexOf(sd.animations[k].name) < 0) exprs.push(sd.animations[k].name);
+      }
+    }
   }
   if (!exprs.length) return;
   _exprIndex = (_exprIndex + 1) % (exprs.length + 1); // +1 = 循环回"无表情"
@@ -776,7 +798,9 @@ function cycleExpression() {
     //（如黑之女神：表情1/2 设过的眼部附件残留到表情3，闭眼附件叠不上去 → 眼睛消失）。
     l.state.clearTrack(1);
     l.skeleton.setSlotsToSetupPose();
-    if (_exprIndex < exprs.length) {
+    // ASMR 双层皮肤两层动画集不同（asmr 层没有数字表情），按名 setAnimation
+    // 遇到缺失动画会 throw "Animation not found"，必须层内存在性守卫
+    if (_exprIndex < exprs.length && l.data.animations.some(function (a) { return a.name === exprs[_exprIndex]; })) {
       var e = l.state.setAnimation(1, exprs[_exprIndex], false);
       if (e) e.mixDuration = 0;
     }
@@ -788,15 +812,26 @@ function cycleExpression() {
 var _touchIndex = -1;
 function cycleTouchInteract() {
   var names = animNames0();
-  var candidates = ["touch_head", "touch_body", "touch_special", "drag", "change_out"];
   var order = [];
-  for (var i = 0; i < candidates.length; i++) {
-    var c = candidates[i];
-    if (hasAnim0(c)) order.push(c);
+  var touchCandidates = ["touch_head", "touch_body", "touch_special"];
+  for (var i = 0; i < touchCandidates.length; i++) {
+    if (hasAnim0(touchCandidates[i])) order.push(touchCandidates[i]);
+  }
+  // 裸名 touch（kansasi_2 午夜休憩线）只按精确名入池——hasAnim0 的前缀匹配
+  // 会把 touch_body 误归入 touch 候选，播一个不存在的动画名
+  if (names.indexOf("touch") >= 0) order.push("touch");
+  // ASMR 互动皮肤（jishang_3 Milk&Kiss 等）：asmr_NNN 系列作为一类入池，选中时随机挑一个
+  var asmrList = [];
+  for (var m = 0; m < names.length; m++) if (/^asmr_\d+$/.test(names[m])) asmrList.push(names[m]);
+  if (asmrList.length) order.push("asmr");
+  var otherCandidates = ["drag", "change_out"];
+  for (var j = 0; j < otherCandidates.length; j++) {
+    if (hasAnim0(otherCandidates[j])) order.push(otherCandidates[j]);
   }
   if (!order.length) return;
   _touchIndex = (_touchIndex + 1) % order.length;
   var action = order[_touchIndex];
+  if (action === "asmr") action = asmrList[Math.floor(Math.random() * asmrList.length)];
   playInteractAnim(action, false);
   var vlabel = action.indexOf("touch") === 0 ? action : "touch_body";
   spinePlayVoice(vlabel);
@@ -913,6 +948,7 @@ function initInteract() {
       var hitName = hitNameAt(e.clientX, e.clientY);
       if (hitName && /^\d+$/.test(hitName)) {
         cycleExpression(); // 点脸（表情区）切换表情
+        spinePlayVoiceRandom(); // 切表情时随机播一句该船触摸/摸头语音
       } else {
         startInteractDrag();
         spinePlayVoice("touch_body");

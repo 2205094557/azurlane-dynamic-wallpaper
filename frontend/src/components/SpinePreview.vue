@@ -75,7 +75,7 @@ watch(subtitleText, (t) => emit('subtitle', t))
 // 语音关闭时清字幕
 watch(voiceEnabled, (on) => { if (!on) subtitleText.value = '' })
 // 互动 cue → 语音基础名映射（与 Live2D 一致）
-const VOICE_BASE = { touch_head: 'touch_head', touch_body: 'touch_1', touch_special: 'touch_2', login: 'login', home: 'home' }
+const VOICE_BASE = { touch_head: 'touch_head', touch_body: 'touch_1', touch_special: 'touch_2', touch: 'touch_body', login: 'login', home: 'home' }
 const VOICE_FALLBACK = {
   touch_head: ['touch_head', 'touch_1', 'touch_2'],
   touch_body: ['touch_1', 'touch_2', 'touch_head'],
@@ -191,8 +191,14 @@ function pickAnim(data) {
 // 它们必须叠加到独立 track（track 1）上，与 track 0 的 normal 动作同时生效；
 // 若用 setAnimation(0,...) 替换 track 0 的 normal，骨架会回到无动作状态变静态。
 function isExpression(name, data) {
-  const a = data && data.animations && data.animations.find((x) => x.name === name)
-  return !!(a && a.duration <= 0)
+  // 传了 data 就查该层；否则跨层查（ASMR 双层皮肤的表情在人物层，
+  // 互动判定用的并集名可能不在第一层）
+  const list = data && data.animations ? [data] : layers.filter((l) => l.skeleton).map((l) => l.data)
+  for (const d of list) {
+    const a = d.animations.find((x) => x.name === name)
+    if (a) return a.duration <= 0
+  }
+  return false
 }
 
 function playAnimation(name) {
@@ -236,9 +242,17 @@ function playAnimation(name) {
 // ============ Spine 互动（drag/touch 两类互动皮肤） ============
 
 function animNames() {
-  // 所有骨架层的动画名集合（取第一层的即可，多层骨架动画名一致）
-  const skel = layers.find((l) => l.skeleton)
-  return skel ? skel.data.animations.map((a) => a.name) : []
+  // 所有骨架层动画名的并集。ASMR 双层皮肤两层动画名不同
+  // （如 jishang_3：人物层 normal+数字表情，asmr 层 asmr_NNN 互动），
+  // 只取第一层会漏掉另一层的表情/互动动画
+  const names = []
+  for (const l of layers) {
+    if (!l.skeleton) continue
+    for (const a of l.data.animations) {
+      if (!names.includes(a.name)) names.push(a.name)
+    }
+  }
+  return names
 }
 function hasAnim(name) {
   const names = animNames()
@@ -255,10 +269,14 @@ const TOUCH_ANIMS = ['touch_body', 'touch_head', 'touch_special']
 function hasPrefixAnim(n, prefix) {
   return n.some((a) => a === prefix || a.startsWith(prefix))
 }
+// ASMR 互动皮肤（jishang_3 Milk&Kiss 等）：asmr 层带 asmr_NNN 系列互动动画
+const ASMR_ANIM_RE = /^asmr_\d+$/
 function isInteractiveSkin() {
   const n = animNames()
   if (hasPrefixAnim(n, 'drag') && hasPrefixAnim(n, 'ex')) return true
-  if (TOUCH_ANIMS.some((t) => n.includes(t)) || n.includes('login')) return true
+  if (TOUCH_ANIMS.some((t) => n.includes(t)) || n.includes('touch')) return true
+  if (n.some((a) => ASMR_ANIM_RE.test(a))) return true
+  if (n.includes('login')) return true
   // 远程数据集有该皮肤的 hitAreas 也视为互动皮肤（如 kaiersheng_2 等纯表情+hit 皮肤）
   return remoteHitAreas.length > 0
 }
@@ -268,6 +286,8 @@ function interactKind() {
   const n = animNames()
   if (hasPrefixAnim(n, 'drag') && hasPrefixAnim(n, 'ex')) return 'drag'
   if (TOUCH_ANIMS.some((t) => n.includes(t))) return 'touch'
+  // 裸名 touch（geliqiya_3 间谍行动大失败等）/ asmr_NNN（jishang_3 等）也归 touch 系
+  if (n.includes('touch') || n.some((a) => ASMR_ANIM_RE.test(a))) return 'touch'
   if (n.includes('login')) return 'touch'
   return ''
 }
@@ -284,9 +304,11 @@ function variantSeqOf(name) {
 function playInteractAnim(name, loop) {
   const first = layers.find((l) => l.skeleton)
   if (!first) return
+  // 跨层并集里找目标（ASMR 皮肤的 asmr_NNN 在 asmr 层，人物层没有）
+  const all = animNames()
   let list = []
-  if (first.data.animations.some((a) => a.name === name)) list = [name]
-  else list = first.data.animations.filter((a) => a.name.startsWith(name) && !a.name.startsWith(name + '_')).map((a) => a.name)
+  if (all.some((a) => a === name)) list = [name]
+  else list = all.filter((a) => a.startsWith(name) && !a.startsWith(name + '_'))
   // 非 drag 场景忽略序号逻辑（touch 系/普通动画无后缀对应需求）
   if (list.length === 1 && list[0] === name) list = [name]
   if (!list.length) return
@@ -343,9 +365,11 @@ function onInteractComplete(entry) {
     enterInteract('normal')
   } else if (name.startsWith('drag') || interactState === 'drag') {
     enterInteract('ex')
-  } else if (/^touch_|^login$/.test(name)) {
+  } else if (/^touch(?:_|$)|^login$/.test(name) || ASMR_ANIM_RE.test(name)) {
     // 官方规则：单次互动动画播完 → 进入 change_idle 待机循环
     // （currentIdle 已在播放时更新为 change_idle；无规则时回 normal）
+    // 注：/^touch(?:_|$)/ 同时匹配裸名 touch（如 kansasi_2 午夜休憩线动画名就叫 touch）；
+    // asmr_NNN（jishang_3 Milk&Kiss 等 ASMR 皮肤互动）播完同样回待机
     playInteractAnim(currentIdle, true)
   }
 }
@@ -448,13 +472,19 @@ let touchIndex = -1
 function cycleTouchInteract() {
   const n = animNames()
   // 建立全动作轮换池：优先 Touch 动作，有 drag / change_out 也一并加入轮换队列
-  const candidates = [...TOUCH_ANIMS, 'drag', 'change_out']
-  const order = candidates.filter((t) => n.some((an) => an === t || an.startsWith(t)))
+  const candidates = [...TOUCH_ANIMS, 'touch', 'drag', 'change_out']
+  // 裸名 touch（kansasi_2 午夜休憩线）只按精确名匹配——
+  // 前缀匹配会让 touch_body 误命中 touch 候选，播一个不存在的动画名
+  const order = candidates.filter((t) => n.some((an) => an === t || (t !== 'touch' && an.startsWith(t))))
+  // ASMR 互动皮肤（jishang_3 Milk&Kiss 等）：asmr_NNN 系列作为一类入池，选中时随机挑一个
+  const asmrList = n.filter((a) => ASMR_ANIM_RE.test(a))
+  if (asmrList.length) order.push('asmr')
   if (!order.length) return
   touchIndex = (touchIndex + 1) % order.length
-  const anim = order[touchIndex]
+  let anim = order[touchIndex]
+  if (anim === 'asmr') anim = asmrList[Math.floor(Math.random() * asmrList.length)]
   playInteractAnim(anim, false)
-  // 动画名 → 语音 label：touch_* 直接对应，drag 对应 touch_body
+  // 动画名 → 语音 label：touch_* 直接对应，drag/asmr 对应 touch_body
   const vlabel = anim.startsWith('touch') ? anim : 'touch_body'
   playVoice(vlabel)
 }
@@ -1087,7 +1117,8 @@ function onCanvasDown(e) {
   // 注意：纯表情皮肤 isInteractiveSkin() 为 false 但同样需要互动（点击切表情），
   // 所以这里不 gate isInteractiveSkin——互动模式一律走互动逻辑，未命中区域再按皮肤类型分流。
   if (props.interactionMode) {
-    const hasTouchAnims = ['touch_body', 'touch_head', 'touch_special'].some((t) => hasAnim(t))
+    const hasTouchAnims = ['touch_body', 'touch_head', 'touch_special', 'touch'].some((t) => hasAnim(t))
+      || animNames().some((a) => ASMR_ANIM_RE.test(a))
     // 精确部位命中：hitArea 世界框（数据来自游戏 prefab 提取的参考数据集）
     const rect = canvasRef.value.getBoundingClientRect()
     const wp = screenToWorld(e.clientX - rect.left, e.clientY - rect.top)
@@ -1096,9 +1127,10 @@ function onCanvasDown(e) {
     // 处于 normal 待机点击 ➔ 触发 drag ➔ 播完自动进 ex 待机循环；
     // 处于 ex 待机点击 ➔ 触发 drag_ex ➔ 播完自动跳回 normal 待机！
     if (interactKind() === 'drag') {
-      // 脸部数字表情点击：切表情
+      // 脸部数字表情点击：切表情 + 随机触摸语音反馈
       if (area && /^\d+$/.test(area.kind) && hasAnim(area.kind)) {
         cycleExpression()
+        playVoiceRandomInteractive()
         canvasRef.value.style.cursor = 'grabbing'
         return
       }
@@ -1120,7 +1152,7 @@ function onCanvasDown(e) {
       if (area) {
         const kindName = area.kind
         if (/^\d+$/.test(kindName)) {
-          // 数字表情 hit → track1 叠加
+          // 数字表情 hit → track1 叠加 + 随机触摸语音反馈
           for (const l of layers) {
             if (!l.skeleton) continue
             if (!l.data.animations.some((a) => a.name === kindName)) continue
@@ -1129,6 +1161,7 @@ function onCanvasDown(e) {
             const d = l.state.setAnimation(1, kindName, false)
             if (d) d.mixDuration = 0
           }
+          playVoiceRandomInteractive()
           canvasRef.value.style.cursor = 'grabbing'
           return
         }
@@ -1153,22 +1186,33 @@ function onCanvasDown(e) {
     // 无官方规则：旧逻辑（drag 系状态机 / touch 系轮换）
     if (area) {
       const kindName = area.kind
-      // 数字表情 hit：不固定播该表情，而是循环切换全部表情（点哪都能换）
+      // 数字表情 hit：不固定播该表情，而是循环切换全部表情（点哪都能换）+ 随机触摸语音反馈
       if (/^\d+$/.test(kindName)) {
         cycleExpression()
+        playVoiceRandomInteractive()
         canvasRef.value.style.cursor = 'grabbing'
         return
       }
       if (kindName === 'drag' && hasAnim('drag')) {
         startInteractDrag()
+        playVoice('touch_body')
       } else if (hasAnim(kindName)) {
         playInteractAnim(kindName, false)
+        playVoice(/^touch/.test(kindName) ? kindName : 'touch_body')
       } else if (interactKind() === 'drag') {
         startInteractDrag()
+        playVoice('touch_body')
+      } else if (animNames().some((n) => isExpression(n))) {
+        // 命中的是整体兜底区（数据集无该皮肤 hitAreas 时 updateInteractiveOverlay
+        // 生成的 __all__ 框）等无对应动画的区域：纯表情皮肤点击切表情，
+        // 与"未命中任何区域"路径行为一致——否则点击落入此分支什么都不做
+        //（如 lingyangzhe3_2 入浴的小恶魔，互动区域开启时点角色不切表情）。
+        cycleExpression()
+        playVoiceRandomInteractive()
       } else {
         cycleTouchInteract()
+        playVoice(/^touch/.test(kindName) ? kindName : 'touch_body')
       }
-      playVoice(/^touch/.test(kindName) ? kindName : 'touch_body')
       canvasRef.value.style.cursor = 'grabbing'
       return
     }
@@ -1181,7 +1225,7 @@ function onCanvasDown(e) {
       // 这类皮肤即使有数字表情，也走 touch 而非切表情，否则只切表情不发音
       //（如安土-午夜的瑰色电梯特殊形态，同时有 touch_body/touch_special 与表情）。
       cycleTouchInteract()
-    } else if (animNames().some((n) => isExpression(n, layers.find((l) => l.skeleton)?.data))) {
+    } else if (animNames().some((n) => isExpression(n))) {
       // 无 drag/touch 但有表情：点击循环切全部表情，
       // 同时随机播一句该船的触摸/摸头/特殊触摸语音作点击反馈（用户需求）
       cycleExpression()
@@ -1207,7 +1251,7 @@ function onCanvasDown(e) {
 // 非互动皮肤：点击循环切换数字表情（duration=0 的 AttachmentTimeline 动画）
 let exprIndex = -1
 function cycleExpression() {
-  const exprs = animNames().filter((n) => isExpression(n, layers.find((l) => l.skeleton)?.data))
+  const exprs = animNames().filter((n) => isExpression(n))
   if (!exprs.length) return
   exprIndex = (exprIndex + 1) % (exprs.length + 1) // +1 = 循环回"无表情"
   for (const l of layers) {
@@ -1224,7 +1268,9 @@ function cycleExpression() {
     //（如黑之女神：表情1/2 设过的眼部附件残留到表情3，闭眼附件叠不上去 → 眼睛消失）。
     l.state.clearTrack(1)
     l.skeleton.setSlotsToSetupPose()
-    if (exprIndex < exprs.length) {
+    // ASMR 双层皮肤两层动画集不同（asmr 层没有数字表情），按名 setAnimation
+    // 遇到缺失动画会 throw "Animation not found"，必须层内存在性守卫
+    if (exprIndex < exprs.length && l.data.animations.some((a) => a.name === exprs[exprIndex])) {
       const e = l.state.setAnimation(1, exprs[exprIndex], false)
       if (e) e.mixDuration = 0
     }
