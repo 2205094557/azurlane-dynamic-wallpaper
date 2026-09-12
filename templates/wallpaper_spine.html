@@ -722,8 +722,12 @@ function cycleExpression() {
       var def = pickAnim(l.data);
       if (def) l.state.setAnimation(0, def, true);
     }
-    // 先清 track1（把上一张表情切过的附件全部还原），避免新表情叠在旧表情残留上
+    // 先清 track1（把上一张表情切过的附件全部还原），避免新表情叠在旧表情残留上。
+    // 关键：clearTrack 只停用动画、不会撤销它已写入的附件——必须 setSlotsToSetupPose
+    // 显式还原插槽，否则上一表情对眼睛等附件的隐藏/替换会残留
+    //（如黑之女神：表情1/2 设过的眼部附件残留到表情3，闭眼附件叠不上去 → 眼睛消失）。
     l.state.clearTrack(1);
+    l.skeleton.setSlotsToSetupPose();
     if (_exprIndex < exprs.length) {
       var e = l.state.setAnimation(1, exprs[_exprIndex], false);
       if (e) e.mixDuration = 0;
