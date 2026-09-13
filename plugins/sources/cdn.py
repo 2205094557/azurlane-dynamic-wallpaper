@@ -13,7 +13,6 @@ from pathlib import Path
 
 import requests
 
-from core.events import bus
 from core.registry import SourcePlugin
 
 from .cdn_proto import p10min_pb_pb2 as pb
@@ -173,7 +172,6 @@ class CdnSource(SourcePlugin):
         """握手 → 拉取相关 hash 清单 → 差分下载指定目录的 bundle。"""
         out_dir = Path(out_dir)
         info = self.handshake(client)
-        bus.emit("cdn.versions", versions=info.versions)
         # 目录 -> 所属 hash 清单
         folder_to_hash = {
             "spinepainting": "azhash",
@@ -205,7 +203,6 @@ class CdnSource(SourcePlugin):
                 dest = out_dir / path
                 if dest.exists() and dest.stat().st_size == size:
                     continue  # 差分：已存在且大小一致则跳过
-                bus.emit("cdn.progress", path=path, size=size)
                 ok = self.download_asset(info.cdn, md5, dest, size)
                 if ok:
                     downloaded += 1

@@ -81,8 +81,7 @@ def _shell_json(cmd: list[str]) -> list[dict]:
     for attempt in range(2):
         try:
             r = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=30,
-                encoding="utf-8", errors="replace",
+                cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
             )
             if r.returncode != 0 or not r.stdout.strip():
                 continue
@@ -153,7 +152,7 @@ def port_owner(port: int) -> int | None:
         "-ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess",
     ]
     try:
-        r = subprocess.run(ps, capture_output=True, text=True, timeout=15)
+        r = subprocess.run(ps, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
         pid = (r.stdout or "").strip().splitlines()
         if pid:
             return int(pid[0])
@@ -172,7 +171,7 @@ def kill_tree(pid: int) -> None:
     if pid and pid > 0:
         subprocess.run(
             ["taskkill", "/PID", str(pid), "/T", "/F"],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
         )
 
 
@@ -182,7 +181,7 @@ def pid_alive(pid: int) -> bool:
     try:
         r = subprocess.run(
             ["tasklist", "/FI", f"PID eq {pid}"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         )
         return f"{pid}" in r.stdout
     except Exception:  # noqa: BLE001

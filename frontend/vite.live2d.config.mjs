@@ -19,6 +19,9 @@ export default defineConfig({
       // （0.4.0 内置的 Cubism 4.x 框架渲染不了最新代 Cubism 5 模型，会整模黑屏）
       { find: 'pixi-live2d-display-lipsyncpatch/cubism4', replacement: path.join(NM, 'pixi-live2d-display-lipsyncpatch/dist/cubism4.es.js') },
       { find: 'pixi.js', replacement: path.join(NM, 'pixi.js/dist/pixi.mjs') },
+      // cubism4.es.js 直接 import @pixi/core 等子包；不归拢到完整版 pixi.mjs 的话，
+      // pixi 核心会在 live2d-app.js 里打包两份（体积翻倍）
+      { find: /^@pixi\/.*$/, replacement: path.join(NM, 'pixi.js/dist/pixi.mjs') },
     ],
   },
   build: {
