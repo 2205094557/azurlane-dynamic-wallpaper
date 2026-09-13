@@ -27,7 +27,6 @@
 ```
 azurlane-dynamic-wallpaper/
 ├── backend_server.py        # 本地后端 API（下载/提取/导出/取色）
-├── app.py                   # 应用装配（插件注册 + 元数据 + 资源库）
 ├── app_pack.py              # 打包版入口（内置后端 + 静态前端 + pywebview）
 ├── web_main.py              # 源码版桌面入口（加载 Vite dev server）
 ├── core/                    # 服务层：注册表 / 元数据 / 资源库 / 取色 / 语音 / WE 集成

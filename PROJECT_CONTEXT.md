@@ -49,7 +49,7 @@
   - `Live2DPreview.vue` 与 `templates/live2d_app_src.js` 双端同步改 imports（`@pixi/*` 模块包 → `pixi.js` 单包；`pixi-live2d-display` → `pixi-live2d-display-lipsyncpatch`）；
   - `autoInteract: false` → `autoHitTest: false, autoFocus: false`（0.5.0 拆分）；Application `transparent: true` → `backgroundAlpha: 0`；
   - pixi v7 单包自动注册 TickerPlugin/interaction，手动 registerPlugin 已删；`Live2DModel.registerTicker(Ticker)` 保留；
-  - Cubism Core 换官方最新版（`frontend/public/vendor/` 与 `templates/vendor/` 两处同步，模板构建经 `vite.live2d.config.mjs` 的 alias 指向新包）；
+  - Cubism Core 换官方最新版（改 `frontend/public/vendor/`，打包版由 vite 复制到 dist，模板构建经 `vite.live2d.config.mjs` 的 alias 指向新包）；
   - 改 `live2d_app_src.js` 后已重建 `templates/live2d-app.js`（铁律 6）。
 - **回归**：26 个本地 L2D 模型（含全部 18 个 moc3 v5）无头 Edge 截图逐个验证全部正常；互动/语音/循环逻辑 API（motionManager.groups、setIsLoop、focusController 等）在 0.5.0 均存在，未改行为。
 - **注意**：打包版需重新 `build_pack.py` 才会带上新运行时；旧包仍黑屏。
@@ -86,7 +86,7 @@
 
 1. **触摸互动播完卡住不回待机**（午夜休憩线 kansasi_2 等）：这类皮肤动画名是**裸名 `touch`**（无下划线后缀），`onInteractComplete` 的判定正则 `/^touch_|^login$/` 匹配不上，播完谁也不切回 normal。预览 `SpinePreview.vue` 与导出模板 `wallpaper_spine.html` 双端改 `/^touch(?:_|$)|^login$/`，互动类型检测/轮换池同步识别裸名 `touch`（只按精确名入池，防止 `touch_body` 误命中），`VOICE_BASE` 补 `touch → touch_body`。
 2. **纯表情皮肤点击不切表情**（入浴的小恶魔 lingyangzhe3_2 等）：数据集无 hitAreas 时预览生成的整体兜底框 kind=`__all__` 在"无官方规则+命中区域"分支里解析不出动画，掉进空的 `cycleTouchInteract()` 什么都不做（仅"交互区域"开关开启时触发；导出模板路径本就正常）。`SpinePreview.vue` 该分支新增表情回落：解析不出 drag/触摸/具名动画时 `cycleExpression()` + 随机互动语音，与"未命中区域"路径行为对齐。
-3. **怨仇（yuanchou）预览报 "Region not found in atlas: ￥ﾛﾾ￥ﾱﾂ 664"**：vendored spine-webgl-3.8.js 的 `BinaryInput.readString` 里 `readByte()` 返回有符号 int8 且缺官方实现的 `& 0xFF` 掩码，≥0x80 的 UTF-8 首字节为负导致 `b >> 4` 永远走 default 单字节分支，skel 里的中文附件名（"图层 664"）解成乱码对不上 atlas（atlas 侧经 `fetch().text()` UTF-8 读取没问题）。三份运行时副本（`templates/vendor/`、`frontend/public/vendor/`、`frontend/dist/vendor/`）同步修复；约 270+ 个 skel 含 CJK 字节，运行时级修复一次全覆盖。
+3. **怨仇（yuanchou）预览报 "Region not found in atlas: ￥ﾛﾾ￥ﾱﾂ 664"**：vendored spine-webgl-3.8.js 的 `BinaryInput.readString` 里 `readByte()` 返回有符号 int8 且缺官方实现的 `& 0xFF` 掩码，≥0x80 的 UTF-8 首字节为负导致 `b >> 4` 永远走 default 单字节分支，skel 里的中文附件名（"图层 664"）解成乱码对不上 atlas（atlas 侧经 `fetch().text()` UTF-8 读取没问题）。vendored 运行时副本（`frontend/public/vendor/`，打包版随 vite 复制到 `frontend/dist/vendor/`）同步修复（`templates/vendor/` 已于 2026-09-13 删除——它本是 live2d 模板构建时 vite copyPublicDir 把 public/ 拷进 templates/ 的副产物，已在 vite.live2d.config.mjs 关闭 copyPublicDir 根治）；约 270+ 个 skel 含 CJK 字节，运行时级修复一次全覆盖。
 4. **同期并行改动**（ASMR 皮肤支持）：`asmr_NNN` 系列互动动画识别与播完回待机、跨层动画名并集（双层皮肤表情/互动在 asmr 层）、`cycleExpression` 层内存在性守卫、`core/voice.py` 语音映射容忍 `_g`（改造）/`_h`（誓约）/`_asmr`（ASMR 分包）纯字母后缀（META 独立船不回退），附 `tools/verify_asmr_interact.py` 验证脚本。
 
 ---

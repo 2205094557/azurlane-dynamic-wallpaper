@@ -29,6 +29,9 @@ export default defineConfig({
     },
     outDir: TEMPLATES,
     emptyOutDir: false,
+    // templates/ 只放构建产物 live2d-app.js；public/（vendor、设计稿）不拷入，
+    // 否则每次构建都会在 templates/ 下再生一份 vendor/ 副本（2026-09-13 清理遗留）
+    copyPublicDir: false,
     minify: false,
     rollupOptions: {
       output: { entryFileNames: 'live2d-app.js' },
