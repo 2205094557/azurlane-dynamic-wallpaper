@@ -95,7 +95,9 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["tkinter"],
+    # numpy 已无任何硬依赖与代码引用（贴图清灰改用纯 PIL），显式排除以省约 27MB；
+    # 它只是被 PIL/UnityPy 的可选 import 连带抓进来的。
+    excludes=["tkinter", "numpy"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

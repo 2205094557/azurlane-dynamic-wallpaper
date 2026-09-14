@@ -48,17 +48,31 @@ def _run_live2d_extractor(src: Path, dst: Path, ref: Path) -> None:
 
 
 def _clean_textures(dst: Path) -> None:
-    """清掉贴图透明像素的灰色 RGB（Live2D 部件边缘灰缝）。"""
+    """清掉贴图透明像素的灰色 RGB（Live2D 部件边缘灰缝）。
+
+    纯 PIL 实现（不引 numpy，省约 27MB 打包体积）：
+    以 alpha==0 为掩码把 RGB 乘 0，alpha 通道原样保留。
+    已干净的图直接跳过重写，避免无谓的 PNG 重新编码。
+    """
     try:
-        import numpy as np
-        from PIL import Image
+        from PIL import Image, ImageChops
 
         for png in Path(dst).rglob("*.png"):
             try:
-                im = Image.open(png).convert("RGBA")
-                arr = np.array(im)
-                arr[arr[:, :, 3] == 0] = 0
-                Image.fromarray(arr).save(png)
+                with Image.open(png) as src:
+                    im = src.convert("RGBA")
+                alpha = im.getchannel("A")
+                if alpha.getextrema()[0] > 0:
+                    continue  # 全是非透明像素，无需处理
+                # keep_mask：255=保留 RGB（alpha!=0），0=清零 RGB（alpha==0）
+                keep_mask = alpha.point(lambda a: 0 if a == 0 else 255).convert("RGB")
+                rgb = im.convert("RGB")
+                cleaned = ImageChops.multiply(rgb, keep_mask)
+                if ImageChops.difference(rgb, cleaned).getbbox() is None:
+                    continue  # 本来就是干净的，保持原文件字节不变
+                out = cleaned.convert("RGBA")
+                out.putalpha(alpha)
+                out.save(png)
             except Exception:  # noqa: BLE001
                 pass
     except Exception:  # noqa: BLE001
