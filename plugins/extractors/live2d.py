@@ -31,6 +31,27 @@ def _ref_root() -> Path:
     return Path(__file__).resolve().parents[2] / "references"
 
 
+def _enable_unitypy_boost() -> bool:
+    """启用 UnityPy 的 C 扩展类型树解析（UnityPyBoost）。
+
+    UnityPyLive2DExtractor 源码里有一行 `TypeTreeHelper.read_typetree_boost = False`
+    主动禁用了该扩展（该设置是历史遗留，实测开启后输出与纯 Python 实现逐字节一致）。
+    纯 Python 逐字节解析是提取耗时的大头：读 5635 个 MonoBehaviour
+    15.3s → 0.13s，整个 Live2D 转换 79.5s → 20.4s（约 4 倍）。
+
+    这里在导入转换器之后把开关打开（而不是改第三方源码——references/ 不入库，
+    改它换机器/更新依赖即失效）。C 扩展缺失时静默跳过，行为退回原样，不影响正确性。
+    """
+    try:
+        from UnityPy.helpers import TypeTreeHelper
+        from UnityPy.UnityPyBoost import read_typetree as _boost
+
+        TypeTreeHelper.read_typetree_boost = _boost
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _run_live2d_extractor(src: Path, dst: Path, ref: Path) -> None:
     """在进程内运行 UnityPyLive2DExtractor（打包版无法起子进程）。"""
     if not (ref / "UnityPyLive2DExtractor" / "__main__.py").exists():
@@ -42,6 +63,9 @@ def _run_live2d_extractor(src: Path, dst: Path, ref: Path) -> None:
         try:
             import UnityPyLive2DExtractor.__main__ as l2d_main
 
+            # 转换器模块级有一行 `read_typetree_boost = False`（首次导入时执行），
+            # 必须在 import 之后再启用一次，否则开关会被它覆盖回纯 Python 实现。
+            _enable_unitypy_boost()
             l2d_main.__main__()
         finally:
             sys.argv = old_argv
