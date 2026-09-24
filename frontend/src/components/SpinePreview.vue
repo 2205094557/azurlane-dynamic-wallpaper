@@ -269,6 +269,24 @@ const TOUCH_ANIMS = ['touch_body', 'touch_head', 'touch_special']
 function hasPrefixAnim(n, prefix) {
   return n.some((a) => a === prefix || a.startsWith(prefix))
 }
+// 特殊待机动画（touch_special_normal 等）：官方 drag_data.config_client 里它是
+// change_idle（点击 touch_special 后进入的循环待机态），不是"点一下播一次的动作"。
+// 降级路径（皮肤不在在线数据集）若把它当单次动作播，complete 回调会把画面切回
+// normal——表现为"进入特殊待机不循环、跳回普通待机"。
+// 注：jiinluhao_4/antu_3 等 6 个皮肤本地骨架含 touch_special_normal。
+const SPECIAL_IDLE_RE = /_normal$/
+function isSpecialIdle(name) {
+  return !!name && SPECIAL_IDLE_RE.test(name)
+}
+// 降级路径推断动作的目标待机：官方规则 change_idle 指向的特殊待机无法离线获取时，
+// 按命名规律推断——若存在 `${action}_normal` 动画（如 touch_special →
+// touch_special_normal），则该动作播完应进入这个特殊待机循环（antine/捡心夜烛等
+// 6 个皮肤的实际数据规律）。无匹配返回 ''（由调用方回退 normal）。
+function specialIdleAfter(action) {
+  if (!action) return ''
+  const cand = `${action}_normal`
+  return hasAnim(cand) ? cand : ''
+}
 // ASMR 互动皮肤（jishang_3 Milk&Kiss 等）：asmr 层带 asmr_NNN 系列互动动画
 const ASMR_ANIM_RE = /^asmr_\d+$/
 function isInteractiveSkin() {
@@ -304,6 +322,9 @@ function variantSeqOf(name) {
 function playInteractAnim(name, loop) {
   const first = layers.find((l) => l.skeleton)
   if (!first) return
+  // 特殊待机（touch_special_normal 等）是循环待机态，任何路径都必须 loop 播放：
+  // 否则播完一圈触发 complete 被误判成"互动动作播完"而跳回 normal（jinluhao_4 等）。
+  if (isSpecialIdle(name)) loop = true
   // 跨层并集里找目标（ASMR 皮肤的 asmr_NNN 在 asmr 层，人物层没有）
   const all = animNames()
   let list = []
@@ -370,7 +391,7 @@ function onInteractComplete(entry) {
     // （currentIdle 已在播放时更新为 change_idle；无规则时回 normal）
     // 注：/^touch(?:_|$)/ 同时匹配裸名 touch（如 kansasi_2 午夜休憩线动画名就叫 touch）；
     // asmr_NNN（jishang_3 Milk&Kiss 等 ASMR 皮肤互动）播完同样回待机
-    playInteractAnim(currentIdle, true)
+    playInteractAnim(isSpecialIdle(currentIdle) ? currentIdle : 'normal', true)
   }
 }
 
@@ -483,6 +504,9 @@ function cycleTouchInteract() {
   touchIndex = (touchIndex + 1) % order.length
   let anim = order[touchIndex]
   if (anim === 'asmr') anim = asmrList[Math.floor(Math.random() * asmrList.length)]
+  // 若该动作有对应的特殊待机（touch_special → touch_special_normal），
+  // 播完后应停在那里循环待机，而不是回 normal（官方 change_idle 语义）
+  currentIdle = specialIdleAfter(anim) || 'normal'
   playInteractAnim(anim, false)
   // 动画名 → 语音 label：touch_* 直接对应，drag/asmr 对应 touch_body
   const vlabel = anim.startsWith('touch') ? anim : 'touch_body'
@@ -1136,6 +1160,12 @@ function onCanvasDown(e) {
       }
       // 命中非 drag 独立小部件（如明确的 touch_head 部位框）
       if (area && area.kind && area.kind !== 'drag' && hasAnim(area.kind)) {
+        if (isSpecialIdle(area.kind)) {
+          // 特殊待机区域：进入循环待机态（playInteractAnim 会强制 loop）
+          currentIdle = area.kind
+        } else {
+          currentIdle = specialIdleAfter(area.kind) || 'normal'
+        }
         playInteractAnim(area.kind, false)
         playVoice(/^touch/.test(area.kind) ? area.kind : 'touch_body')
       } else {
@@ -1196,7 +1226,16 @@ function onCanvasDown(e) {
       if (kindName === 'drag' && hasAnim('drag')) {
         startInteractDrag()
         playVoice('touch_body')
+      } else if (isSpecialIdle(kindName) && hasAnim(kindName)) {
+        // 命中特殊待机区域（touch_special_normal）：它是循环待机态而非单次动作，
+        // 必须 loop 播放并记为新当前待机（否则播完一圈就跳回 normal）。
+        currentIdle = kindName
+        playInteractAnim(kindName, true)
+        playVoice('touch_special')
       } else if (hasAnim(kindName)) {
+        // 普通互动动作：播一次，播完由 complete 回调进入当前待机
+        // （若该动作官方 change_idle 指向特殊待机，则此处需要同步切换）
+        currentIdle = specialIdleAfter(kindName) || 'normal'
         playInteractAnim(kindName, false)
         playVoice(/^touch/.test(kindName) ? kindName : 'touch_body')
       } else if (interactKind() === 'drag') {

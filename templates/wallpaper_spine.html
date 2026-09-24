@@ -650,6 +650,18 @@ function hasAnim0(name) {
   for (var i = 0; i < names.length; i++) if (names[i].indexOf(name) === 0) return true;
   return false;
 }
+// 特殊待机（touch_special_normal 等，与预览端 isSpecialIdle 同步）：循环待机态，
+// 不是"点一下播一次的动作"——必须 loop 播放并作为当前待机。
+function isSpecialIdle(name) {
+  return !!name && /_normal$/.test(name);
+}
+// 降级路径（皮肤不在在线数据集、无官方规则）推断动作的目标待机：
+// 存在 `${action}_normal` 动画时（touch_special → touch_special_normal）用其作新待机。
+function specialIdleAfter(action) {
+  if (!action) return "";
+  var cand = action + "_normal";
+  return animNames0().indexOf(cand) >= 0 ? cand : "";
+}
 function isInteractiveSkin() {
   var names = animNames0();
   if (hasAnim0("drag") && (names.indexOf("ex") >= 0 || names.some(function (a) { return a.indexOf("ex") === 0; }))) return true;
@@ -698,6 +710,10 @@ function playInteractAnim(name, loop) {
   var first = null;
   for (var i = 0; i < skeletons.length; i++) if (skeletons[i].skeleton) { first = skeletons[i]; break; }
   if (!first) return;
+  // 特殊待机（touch_special_normal 等）：官方 drag_data.config_client 里是 change_idle
+  // （点击 touch_special 后进入的循环待机），任何路径都必须 loop 播放——否则播完一圈
+  // 触发 complete 被误判成"互动动作播完"而跳回 normal（jinluhao_4 等 6 个皮肤）。
+  if (isSpecialIdle(name)) loop = true;
   // 前缀枚举：精确名优先，否则所有 name 开头动画（drag → drag1/drag2/drag3）——
   // 跨层并集里找（ASMR 皮肤的 asmr_NNN 在 asmr 层，人物层没有）
   var list = [];
@@ -750,7 +766,8 @@ function onInteractComplete(entry) {
   else if (name.indexOf("drag") === 0 || interactState === "drag") enterInteract("ex");
   // /^touch(?:_|$)/ 同时匹配裸名 touch（如 kansasi_2 午夜休憩线动画名就叫 touch）；
   // asmr_NNN（jishang_3 Milk&Kiss 等 ASMR 皮肤互动）播完同样回待机
-  else if (/^touch(?:_|$)|^login$/.test(name) || /^asmr_\d+$/.test(name)) playInteractAnim(currentIdle, true);
+  // 特殊待机（currentIdle = touch_special_normal）时回该待机循环，否则回 normal
+  else if (/^touch(?:_|$)|^login$/.test(name) || /^asmr_\d+$/.test(name)) playInteractAnim(isSpecialIdle(currentIdle) ? currentIdle : "normal", true);
 }
 function startInteractDrag() {
   if (!interactEnabled) return;
@@ -832,6 +849,9 @@ function cycleTouchInteract() {
   _touchIndex = (_touchIndex + 1) % order.length;
   var action = order[_touchIndex];
   if (action === "asmr") action = asmrList[Math.floor(Math.random() * asmrList.length)];
+  // 若该动作有对应的特殊待机（touch_special → touch_special_normal），
+  // 播完后应停在那里循环待机，而不是回 normal（官方 change_idle 语义）
+  currentIdle = specialIdleAfter(action) || "normal";
   playInteractAnim(action, false);
   var vlabel = action.indexOf("touch") === 0 ? action : "touch_body";
   spinePlayVoice(vlabel);
@@ -957,6 +977,22 @@ function initInteract() {
     }
     // 官方规则状态机：touch 系 skin 按当前 idle 匹配规则（无规则走下方回退）
     if (playRuleAction(null)) return;
+    // 无官方规则（皮肤不在在线数据集）时的兜底：精确命中特殊待机区域
+    // （touch_special_normal 等）或互动动作区域，按"待机态循环 / 动作单次"语义播。
+    // 与预览端 SpinePreview.vue 的命中分支保持一致。
+    var hitName2 = hitNameAt(e.clientX, e.clientY);
+    if (hitName2 && hasAnim0(hitName2) && !/^\d+$/.test(hitName2)) {
+      if (isSpecialIdle(hitName2)) {
+        currentIdle = hitName2;
+        playInteractAnim(hitName2, true);
+        spinePlayVoice(/special/.test(hitName2) ? "touch_special" : "touch_body");
+      } else {
+        currentIdle = specialIdleAfter(hitName2) || "normal";
+        playInteractAnim(hitName2, false);
+        spinePlayVoice(/^touch/.test(hitName2) ? hitName2 : "touch_body");
+      }
+      return;
+    }
     if (hasDragA) {
       startInteractDrag();
       spinePlayVoice("touch_body");

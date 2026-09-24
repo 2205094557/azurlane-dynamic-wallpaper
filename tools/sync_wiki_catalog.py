@@ -5,7 +5,10 @@
 - 舰船图鉴  https://wiki.biligame.com/blhx/舰船图鉴
     SMW ask 查询：分类 舰娘/联动舰娘/META舰娘/方案舰娘 + 改造
 - 换装图鉴  https://wiki.biligame.com/blhx/换装图鉴
-    wikitext 中 {{换装图鉴列表|角色|舰种|阵营|皮肤名|换装N|主题|...}} 行
+    2026-09 改版后：数据在 [[模块:ClothList/json]]（结构化 JSON 数组，
+    字段 船名/舰种/阵营/换装名称/换装/主题/…），页面本体不再内联模板；
+    旧版 {{换装图鉴列表|…}} wikitext 模板作为回退保留（见 fetch_clothlist_rows）。
+    两种来源统一为行格式 [船名, 舰种, 阵营, 换装名, 换装N, 主题]（下游不变）。
 
 职责：
 1. 抓取图鉴 → 写入 resources/metadata/wiki_catalog.json（可离线复用）
@@ -111,6 +114,75 @@ def wiki_api(params: dict, timeout: int = 60) -> dict:
     return {}
 
 
+def fetch_clothlist_rows() -> list[list[str]]:
+    """抓取换装总表，返回旧格式行 [船名, 舰种, 阵营, 换装名, 换装N, 主题]。
+
+    2026-09 起 wiki 换装图鉴改版：页面本体不再内联 {{换装图鉴列表|…}} 模板，
+    完整数据搬到 [[模块:ClothList/json]]（结构化 JSON 数组，字段：
+    船名/舰种/阵营/换装名称/换装/主题/价格/获取方式/表情差分/立绘类型/背景类型/
+    背景物件/备注/实装时间，换装形如 "换装" / "换装2" / … / "誓约"）。
+    本函数把两种来源统一成下游使用的行格式，互为主备：
+      1) 模块:ClothList/json（新版，首选）
+      2) {{换装图鉴列表|…}}（旧版 wikitext 模板，wiki 若回退仍可用）
+    """
+    # ---- 1) 新版：模块:ClothList/json ----
+    try:
+        d = wiki_api({
+            "action": "query", "prop": "revisions", "rvprop": "content",
+            "rvslots": "main", "titles": "模块:ClothList/json",
+        })
+        pages = d.get("query", {}).get("pages", {})
+        # wiki_api 走 formatversion=2：pages 是列表；旧版 API 是 {pageid: {...}} 字典
+        page_list = pages if isinstance(pages, list) else list(pages.values())
+        content = ""
+        for pg in page_list:
+            revs = (pg or {}).get("revisions") or []
+            if revs:
+                slots = revs[0].get("slots") or {}
+                main = slots.get("main") or {}
+                content = main.get("content") or main.get("*") or ""
+                break
+        if content.strip():
+            data = json.loads(content)
+            rows: list[list[str]] = []
+            for item in data if isinstance(data, list) else []:
+                if not isinstance(item, dict):
+                    continue
+                ship = clean_name(str(item.get("船名", "")))
+                skin = strip_markup(str(item.get("换装名称", ""))).strip()
+                if not ship or not skin:
+                    continue
+                rows.append([
+                    ship,
+                    str(item.get("舰种", "")),
+                    str(item.get("阵营", "")),
+                    skin,
+                    str(item.get("换装", "")),
+                    str(item.get("主题", "")),
+                ])
+            if rows:
+                print(f"[wiki] 换装总表（模块:ClothList/json）{len(rows)} 条")
+                return rows
+    except Exception as e:  # noqa: BLE001
+        print(f"[wiki] 新版换装数据源不可用，回退旧模板解析: {type(e).__name__}: {e}")
+
+    # ---- 2) 旧版：页面内联模板 ----
+    d3 = wiki_api({"action": "parse", "page": "换装图鉴", "prop": "wikitext"})
+    wt = d3.get("parse", {}).get("wikitext", "")
+    if isinstance(wt, dict):
+        wt = wt.get("*", "")
+    rows = []
+    for m in re.finditer(r"\{\{换装图鉴列表\|([^}]+)\}\}", wt):
+        fields = [strip_markup(f).strip() for f in m.group(1).split("|")]
+        if len(fields) >= 5 and fields[3]:
+            rows.append(fields)
+    if rows:
+        print(f"[wiki] 换装总表（旧模板）{len(rows)} 条")
+    else:
+        print("[wiki] 警告：换装总表两种来源均无数据")
+    return rows
+
+
 def fetch_wiki_catalog() -> dict:
     """抓取两个图鉴页，返回结构化原始数据。"""
     # 舰船图鉴：第一段 ask（舰娘/联动/META/方案）
@@ -121,37 +193,96 @@ def fetch_wiki_catalog() -> dict:
     q2 = "[[分类:改造]]"
     d2 = wiki_api({"action": "ask", "query": q2 + "|?改造后稀有度|?改造后类型|?阵营|?编号|limit=1000"})
     retrofit = d2.get("query", {}).get("results", {})
-    # 换装图鉴 wikitext
-    d3 = wiki_api({"action": "parse", "page": "换装图鉴", "prop": "wikitext"})
-    wt = d3.get("parse", {}).get("wikitext", "")
-    rows = []
-    for m in re.finditer(r"\{\{换装图鉴列表\|([^}]+)\}\}", wt):
-        fields = [strip_markup(f).strip() for f in m.group(1).split("|")]
-        if len(fields) >= 5 and fields[3]:
-            rows.append(fields)
+    # 换装总表（新版模块 JSON 优先，旧 wikitext 模板回退）
+    rows = fetch_clothlist_rows()
 
-    # 针对未进换装总表的新船：如果舰船图鉴包含该船，解析其自身词条提取换装标题
-    existing_ships_in_skins = {norm(r[0]) for r in rows if r}
+    # 个人词条【标题N】补录：
+    # 换装总表有时落后于个人页（如埃米尔·贝尔汀总表 3 条、个人页 5 条），
+    # 缺了会让新皮肤一直显示英文编号。但逐船抓取成本高（每船一次请求），
+    # 因此仅在「本机上确实存在未命名皮肤（name == painting）」的船上做：
+    # 这类船通常只有个别几艘，且只在出问题时才请求，正常状态零开销。
+    rows_by_ship: dict[str, int] = {}
+    for r in rows:
+        if r:
+            rows_by_ship[norm(r[0])] = rows_by_ship.get(norm(r[0]), 0) + 1
+    existing_ships_in_skins = set(rows_by_ship)
+
+    unresolved_ships: set[str] = set()
+    try:
+        cur_skins = json.loads((MD / "skins.json").read_text(encoding="utf-8"))
+        for s in cur_skins if isinstance(cur_skins, list) else []:
+            nm = str(s.get("name", ""))
+            pt = str(s.get("painting", ""))
+            if nm and pt and nm == pt:
+                unresolved_ships.add(norm(str(s.get("ship", ""))))
+    except Exception:  # noqa: BLE001
+        pass
+
     for title in list(ships.keys()):
-        if norm(title) not in existing_ships_in_skins:
-            try:
-                page_data = wiki_api({"action": "parse", "page": title, "prop": "wikitext"}, timeout=15)
-                pwt = page_data.get("parse", {}).get("wikitext", {}).get("*", "")
-                titles = []
-                for mm in re.finditer(r"\|\s*标题\d+\s*=\s*([^\n|]+)", pwt):
-                    t = strip_markup(mm.group(1)).strip()
-                    if t and t not in titles:
-                        titles.append(t)
-                if titles and title in ships:
-                    ships[title]["outfit_titles"] = titles
-            except Exception:  # noqa: BLE001
-                pass
+        key = norm(title)
+        # 不在总表 → 新船，需要抓；在总表但有未命名皮肤 → 可能总表落后，也抓
+        if key in existing_ships_in_skins and key not in unresolved_ships:
+            continue
+        try:
+            page_data = wiki_api({"action": "parse", "page": title, "prop": "wikitext"}, timeout=15)
+            pwt = page_data.get("parse", {}).get("wikitext", {})
+            if isinstance(pwt, dict):
+                pwt = pwt.get("*", "")
+            titles = []
+            for mm in re.finditer(r"\|\s*标题\d+\s*=\s*([^\n|]+)", pwt):
+                t = strip_markup(mm.group(1)).strip()
+                if t and t not in titles:
+                    titles.append(t)
+            if titles and title in ships and len(titles) > rows_by_ship.get(key, 0):
+                ships[title]["outfit_titles"] = titles
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 个人页比总表更全时，把缺失的换装**合成总表行**（与总表同格式），
+    # 这样它会落盘到 wiki_catalog.json，并参与后续的名字对齐（skin_name_for）。
+    # 否则个人页拿到的名字只存在于内存的 ships 字段里，新皮肤仍显示英文编号。
+    table_rows = list(rows)
+    table_names = {norm(r[3]) for r in rows if len(r) >= 4 and r[3]}
+    ship_meta = {}
+    for r in rows:
+        if len(r) >= 3 and r[0]:
+            ship_meta.setdefault(norm(r[0]), (r[0], r[1], r[2]))
+    added_rows: list[list[str]] = []
+    for title, po in ships.items():
+        page_titles = po.get("outfit_titles") or []
+        if not page_titles:
+            continue
+        key = norm(title)
+        meta = ship_meta.get(key)
+        if meta is None:
+            # 该船完全不在总表：用 ask 拿到的信息做元数据
+            pr = (po.get("printouts") or {})
+            meta = (
+                title,
+                (pr.get("类型") or [""])[0],
+                (pr.get("阵营") or [""])[0],
+            )
+        ship_display, hull_v, faction_v = meta
+        n = 0
+        for sname in page_titles:
+            if not sname or sname.endswith(".改"):
+                continue
+            if norm(sname) in table_names:
+                n += 1
+                continue
+            n += 1
+            order_label = "换装" if n == 1 else f"换装{n}"
+            added_rows.append([ship_display, hull_v, faction_v, sname, order_label, ""])
+            table_names.add(norm(sname))
+    if added_rows:
+        table_rows.extend(added_rows)
+        print(f"[wiki] 个人页补录换装行 {len(added_rows)} 条（总表 {len(rows)} → {len(table_rows)}）")
 
     return {
         "fetched_at": datetime.now().isoformat(timespec="seconds"),
         "ships": ships,
         "retrofit": retrofit,
-        "skins": rows,
+        "skins": table_rows,
     }
 
 
@@ -221,7 +352,10 @@ def build_wiki_ships(raw: dict) -> dict:
         if faction and not ent["faction"]:
             ent["faction"] = faction
 
-    # 兜底补充：无论新船还是老船，如果个人词条已有【标题N】但换装大表未收录最新的换装，自动追加到 skins 列表
+    # 兜底补充：无论新船还是老船，如果个人词条已有【标题N】但换装大表未收录最新的换装，
+    # 自动把缺失的皮肤名追加到该船的 skins 列表（如埃米尔·贝尔汀的「闪耀的“魔法”」）。
+    # 注意排除：①改造条目（以 .改 结尾，属改造不属换装，大表本就不列）
+    #          ②模板占位文本（如「这里填换装标题」）
     for title, po in raw.get("ships", {}).items():
         key = norm(title)
         ent = ships.get(key)
@@ -230,13 +364,19 @@ def build_wiki_ships(raw: dict) -> dict:
         page_titles = po.get("outfit_titles") or []
         existing_names = {s.get("name") for s in ent.get("skins", [])}
         for sname in page_titles:
-            if sname and sname not in existing_names:
-                # 计算当前是第几个普通换装
-                normal_count = sum(1 for s in ent.get("skins", []) if s.get("order") != "誓约")
-                order_label = f"换装{normal_count + 1}" if normal_count > 0 else "换装"
-                ent["skins"].append({"name": sname, "order": order_label, "theme": ""})
-                existing_names.add(sname)
-                print(f"   [单页换装增量补录] {title} -> {sname} ({order_label})")
+            if not sname or sname in existing_names:
+                continue
+            if sname.endswith(".改") or "填" in sname and "标题" in sname:
+                continue  # 改造条目 / 模板占位文本
+            if sname.startswith("这里填") or sname in ("待补充", "未知"):
+                continue
+            # 计算当前是第几个普通换装
+            normal_count = sum(1 for s in ent.get("skins", []) if s.get("order") != "誓约")
+            order_label = f"换装{normal_count + 1}" if normal_count > 0 else "换装"
+            theme = "" if sname == title else ""
+            ent["skins"].append({"name": sname, "order": order_label, "theme": theme})
+            existing_names.add(sname)
+            print(f"   [单页换装增量补录] {title} -> {sname} ({order_label})")
     return ships
 
 
@@ -650,12 +790,65 @@ def order_value(label: str) -> int:
     return 500
 
 
+# 官方皮肤表缓存（判定「官方占位名」用；懒加载一次）
+_OFFICIAL_SKIN_CACHE: dict | None = None
+
+
+def _official_skins() -> dict:
+    global _OFFICIAL_SKIN_CACHE
+    if _OFFICIAL_SKIN_CACHE is None:
+        try:
+            _OFFICIAL_SKIN_CACHE = json.loads(
+                (OFF / "ship_skin_template.json").read_text(encoding="utf-8")
+            )
+        except Exception:  # noqa: BLE001
+            _OFFICIAL_SKIN_CACHE = {}
+    return _OFFICIAL_SKIN_CACHE
+
+
+def is_placeholder_skin(painting: str) -> bool:
+    """该 painting 在官方表里是否为「占位条目」（新皮肤，官方尚未录入正式数据）。
+
+    判据（对照已正确命名的同类数据得出）：
+      - 表中存在该 painting 且 name == painting（未命名，如 'jinluhao_4'）
+      - 且 skin_type == 0（非 L2D/改造等类型）
+      - 且 change_skin 与 shop_id 均为空（非商店在售、非形态切换入口）
+
+    这类条目通常是「一款新皮肤的一种表现形态」（如 L2D 版 + Spine 版拆成
+    painting_3 / painting_4），官方尚未录入正式名，wiki 换装图鉴里它们共用
+    同一个皮肤名。注意与真正的「形态切换皮肤」区分：后者 change_skin 有值
+    （如四万十 siwanshi_3/_4，change_skin.group=39906），且 name 已是正式名。
+    """
+    if not painting:
+        return False
+    key = painting.lower()
+    for _k, v in _official_skins().items():
+        if not isinstance(v, dict):
+            continue
+        if str(v.get("painting", "")).lower() != key:
+            continue
+        name = str(v.get("name", ""))
+        if name != painting:
+            return False
+        if v.get("skin_type") != 0:
+            return False
+        if v.get("change_skin") or v.get("shop_id"):
+            return False
+        return True
+    return False
+
+
 def skin_name_for(wiki_skins: list[dict], outfits: list[dict], base_name: str) -> dict[str, dict]:
     """painting -> {"name": 皮肤中文名, "theme": 皮肤系列}。
 
     优先按名字匹配（模板自带的皮肤名通常是正确的，且能修掉 ?/错字/namecode）；
     匹配不上的再按位置对齐：wiki 行分“换装N”与“誓约”两组，本地分“普通皮肤”与
     “_h 誓约”两组，组内按顺序对齐（换装N 按编号、本地按 group_index）。
+
+    数量不等的处理：一款皮肤可能拆成多个 painting（形态切换，如新皮肤的
+    L2D 版 + Spine 版），此时本地条目数会比 wiki 换装数多。把本地多出的相邻
+    条目视作“同款形态”合并到前一个 wiki 名字上（而非整体放弃对齐），
+    否则会出现“本机缺基础款导致新皮肤一直显示英文编号”的问题。
     """
     by_painting: dict[str, dict] = {}
     used: set[int] = set()
@@ -679,13 +872,77 @@ def skin_name_for(wiki_skins: list[dict], outfits: list[dict], base_name: str) -
     wiki_oath = [w for w in remain_wiki if w["order"] == "誓约"]
     local_normal = [o for o in remain_outfits if not o["painting"].endswith("_h")]
     local_oath = [o for o in remain_outfits if o["painting"].endswith("_h")]
-    if len(wiki_normal) == len(local_normal):
-        for o, w in zip(local_normal, wiki_normal):
-            by_painting.setdefault(o["painting"], {"name": w["name"], "theme": w.get("theme", "")})
-    if len(wiki_oath) == len(local_oath):
-        for o, w in zip(local_oath, wiki_oath):
-            by_painting.setdefault(o["painting"], {"name": w["name"], "theme": w.get("theme", "")})
+    _align_with_variants(by_painting, local_normal, wiki_normal)
+    _align_with_variants(by_painting, local_oath, wiki_oath)
     return by_painting
+
+
+def _align_with_variants(
+    by_painting: dict[str, dict],
+    local: list[dict],
+    wiki: list[dict],
+) -> None:
+    """把 local 按顺序对齐到 wiki；数量不等时把「官方占位条目」当作形态变体。
+
+    仅当 local 比 wiki 多、且多出的条目在官方表里是占位名（is_placeholder_skin）
+    时才做形态复用：这类条目是一款新皮肤的另一表现形态（如 L2D 版 + Spine 版），
+    官方尚未录入正式名，与相邻条目共用同一个 wiki 皮肤名。
+
+    保护规则（_pick）：官方名若以 wiki 名为前缀且更长（带形态后缀，
+    如「共坠的渴慕（L2D）」/「共坠的渴慕（动态）」），保留官方名，只从 wiki 补主题——
+    否则会用无后缀的 wiki 名覆盖掉有意义的形态标注。
+
+    数量相等时保持原有的严格顺序对齐（wiki 名为准）。
+    """
+    if not local or not wiki:
+        return
+
+    def _pick(o: dict, w: dict) -> dict:
+        """名字决策：官方名带形态后缀时保留它，否则采用 wiki 名。"""
+        official = (o.get("name") or "").strip()
+        wname = w["name"]
+        if official and official != wname and official.startswith(wname) and len(official) > len(wname):
+            return {"name": official, "theme": w.get("theme", "")}
+        return {"name": wname, "theme": w.get("theme", "")}
+
+    if len(local) == len(wiki):
+        for o, w in zip(local, wiki):
+            by_painting.setdefault(o["painting"], _pick(o, w))
+        return
+    if len(local) < len(wiki):
+        # 本地条目比 wiki 少：不做对齐（可能本机未下载，避免错配）
+        return
+    # 本地比 wiki 多：逐名分配，官方占位条目吸附到前一个条目（共用同一个皮肤名）
+    variant_idx: set[int] = {i for i, o in enumerate(local) if is_placeholder_skin(o["painting"])}
+    assigned: list[int] = []  # 每项对应的 wiki 下标；-1 = 复用前一项名字
+    wiki_i = 0
+    for i, o in enumerate(local):
+        if i in variant_idx and assigned and wiki_i > 0:
+            assigned.append(-1)  # 官方占位条目：与前一形态共用 wiki 名
+            continue
+        if wiki_i < len(wiki):
+            assigned.append(wiki_i)
+            wiki_i += 1
+        else:
+            # wiki 名额用完但该条目不是官方占位（= 可能是独立皮肤）：
+            # 无法安全判定归属，整体放弃对齐，宁缺勿错
+            return
+    # wiki 名没能全部用上（形态判定未命中，说明多出的并非占位形态）：放弃对齐
+    if wiki_i < len(wiki):
+        return
+    for i, o in enumerate(local):
+        wi = assigned[i] if i < len(assigned) else -1
+        if wi >= 0:
+            by_painting.setdefault(o["painting"], _pick(o, wiki[wi]))
+        else:
+            # 复用前一个已分配的 wiki 名（同款皮肤的另一形态）
+            prev = None
+            for j in range(i - 1, -1, -1):
+                if assigned[j] >= 0:
+                    prev = wiki[assigned[j]]
+                    break
+            if prev is not None:
+                by_painting.setdefault(o["painting"], _pick(o, prev))
 
 
 def build_output(groups: list[dict], assigned: dict[str, str], wmap: dict, current_ships: list[dict]) -> tuple[list[dict], list[dict], dict]:

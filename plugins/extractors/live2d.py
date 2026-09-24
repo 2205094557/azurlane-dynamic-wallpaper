@@ -52,20 +52,36 @@ def _clean_textures(dst: Path) -> None:
 
     纯 PIL 实现（不引 numpy，省约 27MB 打包体积）：
     以 alpha==0 为掩码把 RGB 乘 0，alpha 通道原样保留。
-    已干净的图直接跳过重写，避免无谓的 PNG 重新编码。
+    说明：
+      - 已干净的图直接跳过重写，避免无谓的 PNG 重新编码；
+      - 提取产物里同一张贴图常存两份（根目录 + Textures/ 子目录），
+        按「文件大小 + 尺寸」判定重复，重复的只清一次并直接复制结果，
+        省掉一半的大图解码/编码开销（4096² 贴图单张约 0.7s）。
     """
     try:
         from PIL import Image, ImageChops
 
+        done: dict[tuple[int, tuple[int, int]], Path] = {}  # (size, dims) -> 已清理的文件
         for png in Path(dst).rglob("*.png"):
             try:
+                stat = png.stat()
                 with Image.open(png) as src:
+                    size_key = (stat.st_size, src.size)
                     im = src.convert("RGBA")
+                prev = done.get(size_key)
+                if prev is not None:
+                    # 同尺寸同字节数的贴图视作同一张：直接复用已清理结果
+                    try:
+                        shutil.copyfile(prev, png)
+                        continue
+                    except Exception:  # noqa: BLE001
+                        pass  # 复制失败则回退到正常处理
                 alpha = im.getchannel("A")
                 if alpha.getextrema()[0] > 0:
                     continue  # 全是非透明像素，无需处理
                 # keep_mask：255=保留 RGB（alpha!=0），0=清零 RGB（alpha==0）
-                keep_mask = alpha.point(lambda a: 0 if a == 0 else 255).convert("RGB")
+                # 用查找表（比逐像素 lambda 快，4096² 图上差异明显）
+                keep_mask = alpha.point([0] + [255] * 255).convert("RGB")
                 rgb = im.convert("RGB")
                 cleaned = ImageChops.multiply(rgb, keep_mask)
                 if ImageChops.difference(rgb, cleaned).getbbox() is None:
@@ -73,6 +89,7 @@ def _clean_textures(dst: Path) -> None:
                 out = cleaned.convert("RGBA")
                 out.putalpha(alpha)
                 out.save(png)
+                done[size_key] = png
             except Exception:  # noqa: BLE001
                 pass
     except Exception:  # noqa: BLE001
