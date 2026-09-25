@@ -161,14 +161,24 @@ def verify() -> bool:
 
 
 def clean() -> None:
-    """清空运行时下载数据，恢复“全新安装”状态（只动运行时目录，不动头像/元数据）。"""
-    for sub in ("bundles", "extracted", "wallpapers", "exports"):
+    """清空运行时下载数据，恢复“全新安装”状态（只动运行时目录，不动头像/元数据）。
+
+    voice/ 必须一并清理：L2D 验收会下载测试语音（实测可达 78MB），
+    漏掉会让发布包带上测试语音数据。
+    """
+    for sub in ("bundles", "extracted", "wallpapers", "exports", "voice"):
         d = INTERNAL / "resources" / sub
         if d.exists():
             shutil.rmtree(d, ignore_errors=True)
     ls = INTERNAL / "resources" / "metadata" / "local_skins.json"
     ls.write_text("[]", encoding="utf-8")
-    print("  已清理测试下载数据（bundles/extracted/wallpapers/exports，local_skins.json 重置为空）")
+    db = INTERNAL / "resources" / "library.db"
+    if db.exists():
+        db.unlink()
+    cfg = INTERNAL / "resources" / "config.json"
+    if cfg.exists():
+        cfg.unlink()
+    print("  已清理测试下载数据（bundles/extracted/wallpapers/exports/voice，local_skins.json 重置为空，library.db/config.json 移除）")
 
 
 def main() -> int:
